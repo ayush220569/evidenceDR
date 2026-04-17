@@ -1,0 +1,109 @@
+{
+  "app_name": "EvidencePilot AI",
+  "theme": "dark",
+  "archetype": "Archetype 2 (Performance Pro) / Tactical Command Center",
+  "description": "A production-oriented full-stack web application for ArcGIS support log triage. The UX acts as a 'Command Center' merging technical precision with subtle gamification (confidence scores, readiness meters).",
+  "typography": {
+    "fonts": {
+      "heading": "Chivo",
+      "body": "DM Sans",
+      "mono": "JetBrains Mono"
+    },
+    "rules": {
+      "h1": "text-4xl sm:text-5xl font-black tracking-tighter uppercase",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-tight",
+      "body": "text-base leading-relaxed font-normal",
+      "labels_overlines": "text-xs font-bold uppercase tracking-[0.2em] text-zinc-400",
+      "logs_code": "font-mono text-sm leading-tight text-zinc-300"
+    },
+    "installation": "Import from Google Fonts: Chivo, DM Sans, JetBrains Mono"
+  },
+  "colors": {
+    "background": {
+      "base": "#0A0A0C",
+      "surface": "#121215",
+      "surface_elevated": "#1A1A1E"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "brand": {
+      "primary": "#00E5FF",
+      "primary_hover": "#33EFFF",
+      "secondary": "#7C3AED",
+      "accent": "#FF9F1C"
+    },
+    "gamification": {
+      "confidence_high": "#10B981",
+      "confidence_medium": "#F59E0B",
+      "confidence_low": "#EF4444",
+      "readiness_neon": "#00E5FF"
+    },
+    "borders": {
+      "default": "#27272A",
+      "focus": "#00E5FF",
+      "glow": "rgba(0, 229, 255, 0.5)"
+    },
+    "rules": "Tactical Minimalism: Replace soft shadows with 1px solid strokes (border-white/10). Use high-saturation accent blocks for progress bars and CTA buttons. Tint all greys slightly with blue to match the #0A0A0C obsidian base."
+  },
+  "spacing_and_layout": {
+    "strategy": "MODE B: THE 'CONTROL ROOM' GRID",
+    "grid_system": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 or gap-6",
+    "padding": "Generous internal padding for structural areas. Cards use p-6. Footers use py-20.",
+    "borders": "Expose the skeleton. Use grid borders (`border-collapse`, `border-r`, `border-b`) for data-heavy sections instead of floating cards.",
+    "radius": "Sharp edges or minimal rounding (max `rounded-md` / 6px). No pill-shaped buttons unless it's a specific gamification badge."
+  },
+  "components": {
+    "navigation": {
+      "style": "Solid Background with a hard bottom border (`border-b border-white/10`). z-50 fixed at top.",
+      "links": "Visible on desktop. Use uppercase tracking-wider for nav items."
+    },
+    "buttons": {
+      "primary": "Flat solid background (`bg-[#00E5FF] text-black`), sharp corners or max 4px radius, explicit hover state (`hover:bg-[#33EFFF]`).",
+      "secondary": "Transparent background, 1px solid border (`border-white/20`), text white, hover:bg-white/5.",
+      "ghost": "No background, text-zinc-400, hover:text-white hover:bg-white/5."
+    },
+    "cards": {
+      "default": "Flat background (`bg-[#121215]`), 1px subtle border (`border-white/10`), no shadow.",
+      "hover_state": "Slight lift (`-translate-y-1`), border color darkens or shifts to primary (`border-[#00E5FF]/50`)."
+    },
+    "forms_and_inputs": {
+      "style": "Shadcn based. Dark backgrounds (`bg-[#0A0A0C]`), 1px border (`border-zinc-800`). Focus state MUST have `focus:ring-1 focus:ring-[#00E5FF]`."
+    },
+    "gamification_ui": {
+      "progress_bar": "Segmented blocks or high-contrast continuous line. Use `#00E5FF` for filling, `#27272A` for track. Glow effect (`drop-shadow-[0_0_8px_rgba(0,229,255,0.5)]`) when 100% complete.",
+      "confidence_score": "Small tactical badges. e.g., Green text + green 1px border for >90%, Amber for 50-89%, Red for <50%.",
+      "comparison_cards": "Side-by-side bento layout for AI Provider A vs Provider B. Use `border-collapse` style to separate them tightly. Diff highlights: green tinted background for added insights, red for missed."
+    }
+  },
+  "icons_and_media": {
+    "icon_library": "@phosphor-icons/react",
+    "icon_style": "Duotone or Regular weight. Tactical and precise.",
+    "images": {
+      "hero_background": "Since image search failed due to rate limits, rely on CSS. Use a radial gradient overlay on `#0A0A0C`: `bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900/40 via-[#0A0A0C] to-[#0A0A0C]`.",
+      "empty_states": "Use abstract Phosphor icons with low opacity (e.g., `text-white/5`) instead of placeholder images."
+    }
+  },
+  "motion_and_interactions": {
+    "hover": "Explicit hover states on all interactive elements. Transition transform 0.2s ease.",
+    "loaders": "ASCII art style loaders or highly mechanical/terminal style loading bars (`[||||||    ] 60%`).",
+    "page_transitions": "Framer motion staggered fade-ins for the dashboard widgets."
+  },
+  "accessibility": {
+    "contrast": "Ensure all text against `#121215` meets minimum 4.5:1 ratio. Large neon text needs text-shadow if placed on lighter grey backgrounds.",
+    "testing": "All interactive elements MUST include `data-testid` attribute (e.g., `data-testid='upload-evidence-button'`)."
+  },
+  "instructions_to_main_agent": [
+    "Install fonts: Chivo, DM Sans, JetBrains Mono.",
+    "Install dependencies: @phosphor-icons/react, framer-motion, clsx, tailwind-merge.",
+    "Setup Shadcn UI and customize component borders to 1px solid white/10, remove large shadows.",
+    "Build the dashboard using the 'Control Room' grid strategy. Optimize space, minimize padding between widgets, rely on grid borders to separate content.",
+    "For the Gamified Logic Tree, use terminal-like or 'quest-log' styling. Use the monospace font for diagnostic questions and bright neon accents for selected paths.",
+    "For AI Provider Comparison, render two distinct panels side-by-side using Flexbox or Grid, highlighting differences in reasoning.",
+    "Never use `Inter` for headings. Never use generic full-screen gradients.",
+    "Ensure all data-testids are implemented as requested."
+  ]
+}
