@@ -1,5 +1,6 @@
 """EvidencePilot AI - FastAPI backend."""
-from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Query
+import asyncio
+from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Query, BackgroundTasks
 from fastapi.responses import Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -365,11 +366,11 @@ async def get_score(case_id: str):
 
 
 # ---- AI Analyze ----
-@api.post("/cases/{case_id}/analyze")
-async def analyze_case(case_id: str, req: AnalyzeRequest):
+async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
+    """Background job: runs both providers in parallel, persists result."""
     c = await db.cases.find_one({"id": case_id}, {"_id": 0})
     if not c:
-        raise HTTPException(404, "Case not found")
+        return
     settings = await get_settings_doc()
 
     excerpts = []
@@ -384,36 +385,69 @@ async def analyze_case(case_id: str, req: AnalyzeRequest):
         excerpts.append({"name": f["name"], "layer": f.get("layer", "unknown"), "size": f.get("size", 0), "excerpt": text})
         total_chars += len(text)
 
-    results = c.get("ai_results", {}) or {"provider_a": None, "provider_b": None}
+    async def _maybe(call):
+        return await call
 
-    if req.use_provider_a:
-        results["provider_a"] = await run_provider(
+    coros = []
+    if use_a:
+        coros.append(run_provider(
             provider_label=settings.get("provider_a_label", "OpenAI GPT-5.2"),
             model_provider=settings.get("provider_a_provider", "openai"),
             model_name=settings.get("provider_a_model", "gpt-5.2"),
-            case=c,
-            file_excerpts=excerpts,
+            case=c, file_excerpts=excerpts,
             api_key_override=(settings.get("provider_a_api_key") or None),
-        )
-    if req.use_provider_b:
-        results["provider_b"] = await run_provider(
+        ))
+    if use_b:
+        coros.append(run_provider(
             provider_label=settings.get("provider_b_label", "Microsoft / Copilot-style (Claude Sonnet 4.5)"),
             model_provider=settings.get("provider_b_provider", "anthropic"),
             model_name=settings.get("provider_b_model", "claude-sonnet-4-5-20250929"),
-            case=c,
-            file_excerpts=excerpts,
+            case=c, file_excerpts=excerpts,
             api_key_override=(settings.get("provider_b_api_key") or None),
-        )
+        ))
 
+    out = await asyncio.gather(*coros, return_exceptions=True)
+    results = c.get("ai_results", {}) or {}
+    idx = 0
+    if use_a:
+        v = out[idx]; idx += 1
+        results["provider_a"] = v if not isinstance(v, Exception) else {"error": f"job error: {v}", "output": None, "model": "?", "provider_label": "Provider A"}
+    if use_b:
+        v = out[idx]; idx += 1
+        results["provider_b"] = v if not isinstance(v, Exception) else {"error": f"job error: {v}", "output": None, "model": "?", "provider_label": "Provider B"}
     results["disagreement"] = compute_disagreement(results.get("provider_a"), results.get("provider_b"))
     results["ran_at"] = now_iso()
-
+    results["status"] = "done"
     await db.cases.update_one({"id": case_id}, {"$set": {"ai_results": results, "updated_at": now_iso()}})
-    c2 = await db.cases.find_one({"id": case_id}, {"_id": 0})
-    if not c2:
-        raise HTTPException(404, "Case not found after analysis")
-    c2["score"] = score_evidence(c2)
-    return c2
+
+
+@api.post("/cases/{case_id}/analyze")
+async def analyze_case(case_id: str, req: AnalyzeRequest, background: BackgroundTasks):
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Case not found")
+    # Mark running and dispatch — returns fast to avoid ingress timeouts on long LLM calls
+    results = c.get("ai_results", {}) or {}
+    results["status"] = "running"
+    results["started_at"] = now_iso()
+    await db.cases.update_one({"id": case_id}, {"$set": {"ai_results": results, "updated_at": now_iso()}})
+    background.add_task(_run_analysis_job, case_id, req.use_provider_a, req.use_provider_b)
+    return {"status": "running", "case_id": case_id, "started_at": results["started_at"]}
+
+
+@api.get("/cases/{case_id}/analyze/status")
+async def analyze_status(case_id: str):
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Case not found")
+    ai = c.get("ai_results") or {}
+    return {
+        "status": ai.get("status") or ("done" if ai.get("ran_at") else "idle"),
+        "ran_at": ai.get("ran_at"),
+        "started_at": ai.get("started_at"),
+        "has_a": bool(ai.get("provider_a")),
+        "has_b": bool(ai.get("provider_b")),
+    }
 
 
 # ---- Settings ----

@@ -29,8 +29,16 @@ export default function CaseWorkspace() {
   const runAI = async () => {
     setAnalyzing(true);
     try {
-      const res = await apiClient.analyze(id, true, true);
-      setC(res);
+      await apiClient.analyze(id, true, true);
+      // poll status every 4s until done (or 5 min cap)
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 4000));
+        const s = await apiClient.analyzeStatus(id);
+        if (s.status === "done") break;
+      }
+      const fresh = await apiClient.getCase(id);
+      setC(fresh);
     } catch (e) {
       alert(`Analysis failed: ${e.response?.data?.detail || e.message}`);
     } finally { setAnalyzing(false); }
