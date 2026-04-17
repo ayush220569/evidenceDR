@@ -1,1 +1,211 @@
-# Here are your Instructions
+# EvidencePilot AI
+
+> **Smarter first-pass evidence collection and log triage for ArcGIS support.**
+
+A production-oriented full-stack web app that helps support engineers and technical analysts collect the *right* evidence on the **first attempt**, analyze uploaded logs with **two AI providers side-by-side**, and guides troubleshooting through a **gamified decision tree** based on issue category and clues.
+
+---
+
+## A. Project Overview
+
+**Who is this for?**
+Support engineers, technical analysts, and SMEs working ArcGIS Online / ArcGIS Enterprise / ArcGIS Pro support cases who are tired of chasing customers for missing logs.
+
+**Key features**
+
+* 10 pre-defined issue categories with category-specific evidence rules
+* Drag-and-drop multi-file uploader (`.log .txt .json .xml .csv .har .zip .dmp .evtx .png .pdf`)
+* Automatic layer detection (Browser / Web tier / Portal / Server / Data Store / Pro client / OS)
+* Safe zip extraction with path-traversal protection
+* Gamified logic tree (per-category questions; mission-flow UX)
+* **Dual-AI analysis** — runs Provider A & Provider B in parallel and shows a diff
+* Evidence completeness scoring (context fields × layer coverage)
+* First-pass readiness meter + escalation checklist
+* Export to **Markdown / JSON / printable HTML**
+* Configurable retention, max upload size, and escalation contact
+
+**Architecture**
+
+```
+[ React 19 + Tailwind + shadcn/ui ]   ← frontend (port 3000)
+                |
+                ▼  REACT_APP_BACKEND_URL/api
+[ FastAPI + Motor (async MongoDB) ]   ← backend  (port 8001)
+                |
+                ▼
+[ MongoDB ]   +   [ /backend/uploads/<case_id>/ ]
+```
+
+Both AI providers go through the **EvidencePilot AI provider abstraction** (`backend/ai_providers.py`) which uses the `emergentintegrations` library. By default both providers share the **Emergent Universal LLM Key**; per-provider override keys can be set in **Settings**.
+
+---
+
+## B. Prerequisites
+
+| Component | Required version |
+|---|---|
+| Windows Server | 2019 or 2022 |
+| Python | 3.11+ |
+| Node.js | 20.x LTS |
+| Yarn | 1.22+ (project uses Yarn classic) |
+| MongoDB | 6.x or 7.x |
+| (optional) IIS | for reverse proxy / TLS termination |
+| Disk | 5 GB free for app + uploads |
+
+API keys: an **Emergent Universal LLM Key** is provided out-of-the-box. Optional: your own OpenAI key and/or Azure OpenAI / Microsoft endpoint key — configure in **Settings**.
+
+---
+
+## C. Installation (development)
+
+```bash
+# 1) Clone
+git clone <repo> evidencepilot && cd evidencepilot
+
+# 2) Backend
+cd backend
+pip install -r requirements.txt
+# Edit backend/.env (see .env.example below)
+
+# 3) Frontend
+cd ../frontend
+yarn install
+# Edit frontend/.env (see below)
+
+# 4) Run (dev)
+# Terminal 1
+cd backend && uvicorn server:app --host 0.0.0.0 --port 8001 --reload
+# Terminal 2
+cd frontend && yarn start    # serves on :3000, proxies via REACT_APP_BACKEND_URL
+```
+
+### `backend/.env.example`
+
+```
+MONGO_URL="mongodb://localhost:27017"
+DB_NAME="evidencepilot"
+CORS_ORIGINS="*"
+EMERGENT_LLM_KEY="sk-emergent-..."
+UPLOAD_DIR="/app/backend/uploads"
+```
+
+### `frontend/.env.example`
+
+```
+REACT_APP_BACKEND_URL=http://localhost:8001
+```
+
+---
+
+## D. Windows VM deployment (production)
+
+1. **Install runtimes**
+   - Python 3.11 (add to PATH)
+   - Node 20 LTS + Yarn (`npm install -g yarn`)
+   - MongoDB 7 Community as a Windows service
+
+2. **Folder layout**
+   ```
+   C:\evidencepilot\
+       backend\
+       frontend\
+       uploads\        ← grant write to the service account
+   ```
+
+3. **Backend service via NSSM**
+   ```
+   nssm install EvidencePilotBackend "C:\Python311\python.exe"
+   nssm set EvidencePilotBackend AppParameters "-m uvicorn server:app --host 0.0.0.0 --port 8001"
+   nssm set EvidencePilotBackend AppDirectory "C:\evidencepilot\backend"
+   nssm set EvidencePilotBackend AppEnvironmentExtra ^
+       MONGO_URL=mongodb://localhost:27017 ^
+       DB_NAME=evidencepilot ^
+       UPLOAD_DIR=C:\evidencepilot\uploads ^
+       EMERGENT_LLM_KEY=sk-emergent-...
+   nssm start EvidencePilotBackend
+   ```
+
+4. **Frontend build & service**
+   ```
+   cd C:\evidencepilot\frontend
+   yarn install && yarn build
+   npm install -g serve
+   nssm install EvidencePilotFrontend "C:\Program Files\nodejs\node.exe"
+   nssm set EvidencePilotFrontend AppParameters "C:\Users\...\AppData\Roaming\npm\node_modules\serve\bin\serve.js -s build -l 3000"
+   nssm start EvidencePilotFrontend
+   ```
+
+5. **IIS reverse proxy (optional but recommended)**
+   - Install URL Rewrite + Application Request Routing
+   - In `web.config` route `/api/*` → `http://localhost:8001/api/*` and everything else → `http://localhost:3000/$&`
+
+6. **Firewall**
+   - Inbound 80/443 (or 3000 if not fronted by IIS)
+   - Allow loopback for backend port
+
+7. **Backup**
+   - `mongodump --db evidencepilot --out backups/$(Get-Date -F yyyyMMdd)`
+   - Sync `C:\evidencepilot\uploads\` to your backup target
+
+---
+
+## E. Configuration
+
+In-app **Settings**:
+
+| Setting | Default | Notes |
+|---|---|---|
+| Provider A | OpenAI / `gpt-5.2` | Override key field accepts any OpenAI-compatible key |
+| Provider B | Anthropic / `claude-sonnet-4-5-20250929` | Labeled "Microsoft / Copilot-style" — change `provider/model` to point at Azure OpenAI or other compatible endpoints |
+| Retention (days) | 30 | Used for scheduled cleanup (manual today) |
+| Max upload (MB) | 50 | Per-file cap |
+| Escalation contact | `corp.support.help@esri.ca` | Editable per deployment |
+
+---
+
+## F. How to use
+
+1. **Dashboard** → click **New Analysis**
+2. Pick **category** & confirm **symptom clues**
+3. Fill the **context** form (timestamps + timezone, URLs, versions, topology, recent changes, repro steps)
+4. Inside the **Case Workspace**:
+   - Drop log files (auto layer-detection, drag re-classify)
+   - Open the **Logic Tree** tab and answer the guided questions
+   - Click **Run dual-AI** for side-by-side analysis
+   - Review **Gaps & Next Steps** + **Escalation Checklist**
+   - Open **Export** tab → download Markdown / JSON / HTML
+
+---
+
+## G. Limitations
+
+* AI analysis is **advisory**, not authoritative.
+* Binary formats (`.dmp`, `.evtx`) are not deeply parsed in the MVP — use WinDbg / `wevtutil` externally.
+* Model quality depends on uploaded evidence quality.
+* "Microsoft / Copilot" endpoints vary by org — the Provider B adapter is configurable; wire to Azure OpenAI by overriding key + model in Settings.
+* Large log bundles are chunked at ~30 KB total per analysis run; for huge bundles, split per-layer.
+* Local admin auth is intentionally lightweight — front the app with IIS auth / AD / SSO for production.
+
+---
+
+## H. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| App won't start | Port 8001 in use | `Get-NetTCPConnection -LocalPort 8001` |
+| AI returns "No API key" | EMERGENT_LLM_KEY missing | Set env var or override in Settings |
+| Provider timeout | Model under load | Re-run; lower file excerpts |
+| Large file fails | Exceeds `max_upload_mb` | Raise cap in Settings |
+| Zip extraction blocked | Path traversal attempted | This is correct — file is malicious |
+| Mongo lock | Service down | `Get-Service MongoDB` → restart |
+
+---
+
+## I. Future enhancements
+
+- AD / SSO authentication
+- Richer EVTX & dump parsing (built-in WinDbg-lite)
+- Case sharing workflows
+- Template packs per category
+- Offline / on-prem model support
+- Scheduled retention purge
