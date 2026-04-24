@@ -65,6 +65,8 @@ git clone <repo> evidencepilot && cd evidencepilot
 # 2) Backend
 cd backend
 pip install -r requirements.txt
+# emergentintegrations ships from Emergent's private package index — install it separately:
+pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
 # Edit backend/.env (see .env.example below)
 
 # 3) Frontend
