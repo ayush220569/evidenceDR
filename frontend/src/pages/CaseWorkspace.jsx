@@ -16,7 +16,10 @@ export default function CaseWorkspace() {
 
   const reload = () => apiClient.getCase(id).then(setC);
 
-  useEffect(() => { reload(); apiClient.getCategories().then(setMeta); }, [id]);
+  useEffect(() => {
+    apiClient.getCase(id).then(setC);
+    apiClient.getCategories().then(setMeta);
+  }, [id]);
 
   if (!c) return <div className="px-8 py-10 text-[#71717A]">Loading case…</div>;
 
