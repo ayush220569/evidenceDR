@@ -54,7 +54,7 @@ export default function Settings() {
               <input type="number" min="1" value={s.retention_days || 30} onChange={e => upd("retention_days", Number(e.target.value))} className="w-full px-3 py-2" data-testid="retention-input" />
             </Field>
             <Field label="Max upload size (MB)">
-              <input type="number" min="1" value={s.max_upload_mb || 50} onChange={e => upd("max_upload_mb", Number(e.target.value))} className="w-full px-3 py-2" data-testid="max-upload-input" />
+              <input type="number" min="1" value={s.max_upload_mb || 512} onChange={e => upd("max_upload_mb", Number(e.target.value))} className="w-full px-3 py-2" data-testid="max-upload-input" />
             </Field>
             <Field label="Escalation contact">
               <input value={s.escalation_contact || ""} onChange={e => upd("escalation_contact", e.target.value)} className="w-full px-3 py-2" data-testid="escalation-contact-input" />

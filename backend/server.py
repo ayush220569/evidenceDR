@@ -85,7 +85,7 @@ class SettingsModel(BaseModel):
     provider_b_provider: str = "anthropic"
     provider_b_api_key: Optional[str] = ""
     retention_days: int = 30
-    max_upload_mb: int = 50
+    max_upload_mb: int = 512
     escalation_contact: str = "corp.support.help@esri.ca"
 
 
@@ -224,7 +224,7 @@ async def upload_files(case_id: str, files: List[UploadFile] = File(...), layer:
     if not c:
         raise HTTPException(404, "Case not found")
     settings = await get_settings_doc()
-    max_bytes = int(settings.get("max_upload_mb", 50)) * 1024 * 1024
+    max_bytes = int(settings.get("max_upload_mb", 512)) * 1024 * 1024
 
     saved = []
     cdir = case_dir(case_id)
