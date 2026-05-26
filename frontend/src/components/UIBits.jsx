@@ -27,7 +27,8 @@ export function SegmentedMeter({ value, segments = 10, testid }) {
   return (
     <div className="flex items-center" data-testid={testid || "segmented-meter"}>
       {Array.from({ length: segments }).map((_, i) => (
-        <span key={i} className={`ep-segment ${i < filled ? "on" : ""}`} />
+        // segments is a fixed-length visual meter — index is the natural and stable key here
+        <span key={`seg-${segments}-${i}`} className={`ep-segment ${i < filled ? "on" : ""}`} />
       ))}
     </div>
   );

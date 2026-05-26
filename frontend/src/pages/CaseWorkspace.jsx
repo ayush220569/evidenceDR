@@ -241,7 +241,7 @@ function ProviderCard({ label, data }) {
         <div className="label-overline mb-1">Ranked hypotheses</div>
         <ul className="text-sm space-y-1.5">
           {(out.ranked_hypotheses || []).map((h, i) => (
-            <li key={i} className="flex items-start gap-2">
+            <li key={`${h.hypothesis || "h"}-${i}`} className="flex items-start gap-2">
               <span className="font-mono text-[#71717A] text-xs mt-0.5">{`h${i+1}`}</span>
               <div className="flex-1">
                 <div className="text-[#fff]">{h.hypothesis}</div>
@@ -254,7 +254,7 @@ function ProviderCard({ label, data }) {
       <div className="mt-3">
         <div className="label-overline mb-1">Next collection steps</div>
         <ol className="text-sm text-[#A1A1AA] space-y-1 list-decimal list-inside">
-          {(out.next_collection_steps || []).map((s, i) => <li key={i}>{s}</li>)}
+          {(out.next_collection_steps || []).map((s, i) => <li key={`${s.slice(0,40)}-${i}`}>{s}</li>)}
         </ol>
       </div>
       {out.customer_summary && (
@@ -292,7 +292,7 @@ function RetrievalPanel({ r, layers }) {
       ) : (
         <div className="space-y-2 max-h-80 overflow-y-auto">
           {chunks.map((ch, i) => (
-            <div key={i} className="border border-white/5 bg-[#0A0A0C] rounded px-3 py-2" data-testid={`retrieved-chunk-${i}`}>
+            <div key={`${ch.file_id || "f"}-${ch.chunk_index ?? i}`} className="border border-white/5 bg-[#0A0A0C] rounded px-3 py-2" data-testid={`retrieved-chunk-${i}`}>
               <div className="flex items-center gap-2 mb-1 text-[11px]">
                 <span className="font-mono text-[#71717A]">{`#${i+1}`}</span>
                 <span className="font-mono text-[#00E5FF]">{ch.file_name}</span>
@@ -324,11 +324,11 @@ function DisagreementPanel({ d }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
         <div>
           <div className="label-overline mb-2">Only in A</div>
-          {d.only_in_a?.length === 0 ? <div className="text-[#71717A] text-xs">(none)</div> : d.only_in_a.map((h, i) => <div key={i} className="diff-add mb-1">{h}</div>)}
+          {d.only_in_a?.length === 0 ? <div className="text-[#71717A] text-xs">(none)</div> : d.only_in_a.map((h) => <div key={`a-${h}`} className="diff-add mb-1">{h}</div>)}
         </div>
         <div>
           <div className="label-overline mb-2">Only in B</div>
-          {d.only_in_b?.length === 0 ? <div className="text-[#71717A] text-xs">(none)</div> : d.only_in_b.map((h, i) => <div key={i} className="diff-add mb-1">{h}</div>)}
+          {d.only_in_b?.length === 0 ? <div className="text-[#71717A] text-xs">(none)</div> : d.only_in_b.map((h) => <div key={`b-${h}`} className="diff-add mb-1">{h}</div>)}
         </div>
       </div>
       <div className="mt-3 text-xs text-[#71717A] font-mono">{`// confidence delta: ${d.confidence_delta} (A=${d.confidence_a}, B=${d.confidence_b})`}</div>
@@ -344,7 +344,7 @@ function NextSteps({ aiA, aiB, cat }) {
   if (steps.size === 0) return <div className="text-sm text-[#71717A]">Run AI or pick a category.</div>;
   return (
     <ol className="text-sm text-[#A1A1AA] space-y-2 list-decimal list-inside">
-      {[...steps].map((s, i) => <li key={i}>{s}</li>)}
+      {[...steps].map((s) => <li key={s}>{s}</li>)}
     </ol>
   );
 }

@@ -4,6 +4,21 @@ import { apiClient } from "../lib/api";
 import { PageHeader, ProgressBar, SegmentedMeter, EmptyState, LayerTag } from "../components/UIBits";
 import { Plus, ChartBar, Folder, CheckCircle, WarningCircle, Robot, Lightning } from "@phosphor-icons/react";
 
+const READINESS_STYLE = {
+  high: { color: "#10B981", border: "#10B98155", bg: "#10B98112" },
+  medium: { color: "#F59E0B", border: "#F59E0B55", bg: "#F59E0B12" },
+  low: { color: "#EF4444", border: "#EF444455", bg: "#EF444412" },
+};
+
+function ReadinessBadge({ readiness }) {
+  const s = READINESS_STYLE[readiness] || { color: "#71717A", border: "#71717A55", bg: "#71717A12" };
+  return (
+    <span className="tag" style={{ color: s.color, borderColor: s.border, background: s.bg }} data-testid={`readiness-${readiness || "unknown"}`}>
+      {(readiness || "unknown").toUpperCase()}
+    </span>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
@@ -94,10 +109,7 @@ export default function Dashboard() {
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="font-heading font-bold text-base leading-tight line-clamp-2">{c.title}</div>
-                    <LayerTag layer={c.score?.readiness === "high" ? "client_pro" : "unknown"} layers={{
-                      client_pro: { name: c.score?.readiness?.toUpperCase() || "?", color: c.score?.readiness === "high" ? "#10B981" : c.score?.readiness === "medium" ? "#F59E0B" : "#EF4444" },
-                      unknown: { name: c.score?.readiness?.toUpperCase() || "?", color: "#71717A" }
-                    }} />
+                    <ReadinessBadge readiness={c.score?.readiness} />
                   </div>
                   <div className="text-[11px] text-[#71717A] font-mono uppercase tracking-wider mb-3">{catName(c.category_id)}</div>
                   <div className="flex items-center gap-2 text-xs">
