@@ -4,7 +4,7 @@ import { apiClient } from "../lib/api";
 import { PageHeader, ProgressBar, SegmentedMeter, ConfidenceBadge, LayerTag, EmptyState } from "../components/UIBits";
 import FileUploader from "../components/FileUploader";
 import LogicTree from "../components/LogicTree";
-import { Robot, Sparkle, Download, FileText, Code, Browsers, ArrowsClockwise, WarningCircle, CheckCircle } from "@phosphor-icons/react";
+import { Robot, Sparkle, Download, FileText, Code, Browsers, ArrowsClockwise, WarningCircle, CheckCircle, MagnifyingGlass } from "@phosphor-icons/react";
 
 export default function CaseWorkspace() {
   const { id } = useParams();
@@ -122,6 +122,7 @@ export default function CaseWorkspace() {
               <EmptyState icon={Sparkle} title="No AI analysis yet" hint="Run the dual-AI pipeline to get side-by-side triage from two providers." action={<button onClick={runAI} disabled={analyzing} className="btn-primary" data-testid="ai-empty-run-btn"><Robot size={14} /> {analyzing ? "Running…" : "Run dual-AI"}</button>} />
             ) : (
               <div className="space-y-5">
+                {c.ai_results?.retrieval && <RetrievalPanel r={c.ai_results.retrieval} layers={meta.layers} />}
                 {dis && <DisagreementPanel d={dis} />}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   <ProviderCard label="Provider A" data={aiA} />
@@ -266,6 +267,42 @@ function ProviderCard({ label, data }) {
         <div className="mt-3">
           <div className="label-overline mb-1">Internal escalation</div>
           <div className="terminal-block">{out.internal_escalation_summary}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RetrievalPanel({ r, layers }) {
+  const chunks = r?.chunks || [];
+  return (
+    <div className="ep-card p-5" data-testid="retrieval-panel">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <div className="label-overline flex items-center gap-2"><MagnifyingGlass size={14} weight="duotone" className="text-[#00E5FF]" /> Retrieved Evidence (RAG)</div>
+          <div className="font-heading font-bold text-sm mt-0.5">Top {chunks.length} chunks fed to both providers · {r?.total_chunks_in_case || 0} chunks indexed</div>
+        </div>
+        <span className="tag confidence-high">top-k={r?.top_k}</span>
+      </div>
+      <div className="text-[11px] text-[#71717A] font-mono mb-3">
+        {"// query: "}{(r?.query || "").slice(0, 200)}{(r?.query || "").length > 200 ? "…" : ""}
+      </div>
+      {chunks.length === 0 ? (
+        <div className="text-sm text-[#71717A]">(no chunks retrieved)</div>
+      ) : (
+        <div className="space-y-2 max-h-80 overflow-y-auto">
+          {chunks.map((ch, i) => (
+            <div key={i} className="border border-white/5 bg-[#0A0A0C] rounded px-3 py-2" data-testid={`retrieved-chunk-${i}`}>
+              <div className="flex items-center gap-2 mb-1 text-[11px]">
+                <span className="font-mono text-[#71717A]">{`#${i+1}`}</span>
+                <span className="font-mono text-[#00E5FF]">{ch.file_name}</span>
+                <span className="font-mono text-[#A1A1AA]">ch{ch.chunk_index}</span>
+                <span className={`tag ${ch.score >= 0.7 ? "confidence-high" : ch.score >= 0.5 ? "confidence-medium" : "confidence-low"}`}>{(ch.score || 0).toFixed(3)}</span>
+                {ch.layer && <span className="tag" style={{ color: layers?.[ch.layer]?.color, borderColor: (layers?.[ch.layer]?.color || "#71717A") + "55" }}>{layers?.[ch.layer]?.name || ch.layer}</span>}
+              </div>
+              <div className="font-mono text-[11.5px] text-[#A1A1AA] whitespace-pre-wrap leading-relaxed">{ch.preview}</div>
+            </div>
+          ))}
         </div>
       )}
     </div>

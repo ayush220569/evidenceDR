@@ -19,6 +19,14 @@ from pydantic import BaseModel
 from rules import CATEGORIES, LAYERS, CONTEXT_FIELDS, get_logic_tree, score_evidence
 from ai_providers import run_provider, compute_disagreement
 from file_utils import extract_text, detect_layer, safe_extract_zip
+from retrieval import (
+    index_file as rt_index_file,
+    retrieve as rt_retrieve,
+    clear_file as rt_clear_file,
+    clear_case as rt_clear_case,
+    count_case as rt_count_case,
+    build_query as rt_build_query,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -87,6 +95,11 @@ class SettingsModel(BaseModel):
     retention_days: int = 30
     max_upload_mb: int = 512
     escalation_contact: str = "corp.support.help@esri.ca"
+    # Retrieval / RAG tuning
+    retrieval_top_k: int = 40
+    chunk_size_chars: int = 800
+    chunk_overlap_chars: int = 100
+    max_index_bytes_per_file: int = 10 * 1024 * 1024  # 10 MB of text per file indexed
 
 
 # ------------------ Helpers ------------------
@@ -214,17 +227,38 @@ async def delete_case(case_id: str):
     d = UPLOAD_DIR / case_id
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)
+    try:
+        rt_clear_case(case_id)
+    except Exception:
+        logger.exception("vector cleanup failed")
     return {"deleted": case_id}
 
 
 # ---- Files ----
+async def _index_file_bg(case_id: str, file_id: str, name: str, layer: str, stored_path: str,
+                         chunk_chars: int, overlap_chars: int, max_bytes: int):
+    """Background task: read file text up to max_bytes and index into ChromaDB."""
+    try:
+        text = extract_text(stored_path, max_bytes=max_bytes)
+        if text and not text.startswith("("):  # skip binary placeholders
+            n = rt_index_file(case_id, file_id, name, layer, text,
+                              chunk_chars=chunk_chars, overlap_chars=overlap_chars)
+            logger.info(f"Indexed {n} chunks for case={case_id} file={name}")
+    except Exception as e:
+        logger.exception(f"Indexing failed for {name}: {e}")
+
+
 @api.post("/cases/{case_id}/files")
-async def upload_files(case_id: str, files: List[UploadFile] = File(...), layer: Optional[str] = Form(None)):
+async def upload_files(case_id: str, background: BackgroundTasks,
+                       files: List[UploadFile] = File(...), layer: Optional[str] = Form(None)):
     c = await db.cases.find_one({"id": case_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Case not found")
     settings = await get_settings_doc()
     max_bytes = int(settings.get("max_upload_mb", 512)) * 1024 * 1024
+    chunk_chars = int(settings.get("chunk_size_chars", 800))
+    overlap_chars = int(settings.get("chunk_overlap_chars", 100))
+    max_index_bytes = int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024))
 
     saved = []
     cdir = case_dir(case_id)
@@ -255,8 +289,12 @@ async def upload_files(case_id: str, files: List[UploadFile] = File(...), layer:
             "ext": Path(safe_name).suffix.lower(),
             "layer": detected,
             "uploaded_at": now_iso(),
+            "indexed": False,
         }
         saved.append(meta)
+        # background index — don't block upload response
+        background.add_task(_index_file_bg, case_id, fid, safe_name, detected, str(target),
+                            chunk_chars, overlap_chars, max_index_bytes)
 
     await db.cases.update_one(
         {"id": case_id},
@@ -280,6 +318,10 @@ async def delete_file(case_id: str, file_id: str):
         Path(target["stored_path"]).unlink(missing_ok=True)
     except Exception:
         pass
+    try:
+        rt_clear_file(case_id, file_id)
+    except Exception:
+        logger.exception("vector cleanup failed")
     await db.cases.update_one({"id": case_id}, {"$pull": {"files": {"id": file_id}}, "$set": {"updated_at": now_iso()}})
     return {"deleted": file_id}
 
@@ -310,13 +352,18 @@ async def preview_file(case_id: str, file_id: str, max_bytes: int = 20000):
 
 
 @api.post("/cases/{case_id}/files/{file_id}/extract")
-async def extract_zip(case_id: str, file_id: str):
+async def extract_zip(case_id: str, file_id: str, background: BackgroundTasks):
     c = await db.cases.find_one({"id": case_id}, {"_id": 0})
     if not c:
         raise HTTPException(404, "Case not found")
     target = next((f for f in c.get("files", []) if f["id"] == file_id), None)
     if not target or target.get("ext") != ".zip":
         raise HTTPException(400, "Not a zip file")
+    settings = await get_settings_doc()
+    chunk_chars = int(settings.get("chunk_size_chars", 800))
+    overlap_chars = int(settings.get("chunk_overlap_chars", 100))
+    max_index_bytes = int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024))
+
     cdir = case_dir(case_id) / f"extracted_{file_id}"
     members = safe_extract_zip(target["stored_path"], str(cdir))
     new_files = []
@@ -325,8 +372,9 @@ async def extract_zip(case_id: str, file_id: str):
         size = os.path.getsize(m)
         excerpt = extract_text(m, max_bytes=20000)
         detected = detect_layer(name, excerpt)
+        fid = uuid.uuid4().hex[:10]
         new_files.append({
-            "id": uuid.uuid4().hex[:10],
+            "id": fid,
             "name": name,
             "stored_path": m,
             "size": size,
@@ -334,7 +382,10 @@ async def extract_zip(case_id: str, file_id: str):
             "layer": detected,
             "uploaded_at": now_iso(),
             "from_zip": target["name"],
+            "indexed": False,
         })
+        background.add_task(_index_file_bg, case_id, fid, name, detected, m,
+                            chunk_chars, overlap_chars, max_index_bytes)
     if new_files:
         await db.cases.update_one({"id": case_id}, {"$push": {"files": {"$each": new_files}}})
     return {"extracted": new_files}
@@ -356,6 +407,46 @@ async def save_logic_answers(case_id: str, answers: List[LogicAnswer]):
     return c2
 
 
+# ---- Retrieval ----
+class RetrievalQuery(BaseModel):
+    query: Optional[str] = None
+    top_k: int = 20
+
+
+@api.get("/cases/{case_id}/retrieval/stats")
+async def retrieval_stats(case_id: str):
+    return {"case_id": case_id, "indexed_chunks": rt_count_case(case_id)}
+
+
+@api.post("/cases/{case_id}/retrieval/search")
+async def retrieval_search(case_id: str, payload: RetrievalQuery):
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Case not found")
+    q = payload.query or rt_build_query(c)
+    hits = rt_retrieve(case_id, q, top_k=payload.top_k)
+    return {"query": q, "hits": hits, "indexed_chunks": rt_count_case(case_id)}
+
+
+@api.post("/cases/{case_id}/files/{file_id}/reindex")
+async def reindex_file(case_id: str, file_id: str, background: BackgroundTasks):
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Case not found")
+    target = next((f for f in c.get("files", []) if f["id"] == file_id), None)
+    if not target:
+        raise HTTPException(404, "File not found")
+    settings = await get_settings_doc()
+    background.add_task(
+        _index_file_bg, case_id, file_id, target["name"], target.get("layer", "unknown"),
+        target["stored_path"],
+        int(settings.get("chunk_size_chars", 800)),
+        int(settings.get("chunk_overlap_chars", 100)),
+        int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024)),
+    )
+    return {"status": "indexing", "file_id": file_id}
+
+
 # ---- Score ----
 @api.get("/cases/{case_id}/score")
 async def get_score(case_id: str):
@@ -367,23 +458,40 @@ async def get_score(case_id: str):
 
 # ---- AI Analyze ----
 async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
-    """Background job: runs both providers in parallel, persists result."""
+    """Background job: retrieves relevant chunks via semantic search, runs both providers in parallel."""
     c = await db.cases.find_one({"id": case_id}, {"_id": 0})
     if not c:
         return
     settings = await get_settings_doc()
+    top_k = int(settings.get("retrieval_top_k", 40))
+    chunk_chars = int(settings.get("chunk_size_chars", 800))
+    overlap_chars = int(settings.get("chunk_overlap_chars", 100))
 
-    excerpts = []
-    total_chars = 0
-    cap = 30_000
-    for f in c.get("files", []):
-        if total_chars >= cap:
-            break
-        text = extract_text(f["stored_path"], max_bytes=8000)
-        if total_chars + len(text) > cap:
-            text = text[: max(0, cap - total_chars)]
-        excerpts.append({"name": f["name"], "layer": f.get("layer", "unknown"), "size": f.get("size", 0), "excerpt": text})
-        total_chars += len(text)
+    # Semantic retrieval
+    query = rt_build_query(c)
+    retrieved = []
+    try:
+        retrieved = rt_retrieve(case_id, query, top_k=top_k)
+    except Exception as e:
+        logger.exception(f"retrieval failed: {e}")
+
+    # If nothing retrieved (e.g. brand-new files still indexing), fall back to a quick head-of-file pass
+    if not retrieved:
+        for f in c.get("files", []):
+            text = extract_text(f["stored_path"], max_bytes=6000)
+            if text and not text.startswith("("):
+                retrieved.append({
+                    "text": text,
+                    "file_name": f["name"], "file_id": f["id"],
+                    "layer": f.get("layer", "unknown"),
+                    "chunk_index": 0, "distance": 1.0, "score": 0.0,
+                })
+                # also try to index it now so subsequent runs use real retrieval
+                try:
+                    rt_index_file(case_id, f["id"], f["name"], f.get("layer", "unknown"), text,
+                                  chunk_chars=chunk_chars, overlap_chars=overlap_chars)
+                except Exception:
+                    pass
 
     async def _maybe(call):
         return await call
@@ -394,7 +502,7 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
             provider_label=settings.get("provider_a_label", "OpenAI GPT-5.2"),
             model_provider=settings.get("provider_a_provider", "openai"),
             model_name=settings.get("provider_a_model", "gpt-5.2"),
-            case=c, file_excerpts=excerpts,
+            case=c, retrieved_chunks=retrieved,
             api_key_override=(settings.get("provider_a_api_key") or None),
         ))
     if use_b:
@@ -402,7 +510,7 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
             provider_label=settings.get("provider_b_label", "Microsoft / Copilot-style (Claude Sonnet 4.5)"),
             model_provider=settings.get("provider_b_provider", "anthropic"),
             model_name=settings.get("provider_b_model", "claude-sonnet-4-5-20250929"),
-            case=c, file_excerpts=excerpts,
+            case=c, retrieved_chunks=retrieved,
             api_key_override=(settings.get("provider_b_api_key") or None),
         ))
 
@@ -410,14 +518,23 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
     results = c.get("ai_results", {}) or {}
     idx = 0
     if use_a:
-        v = out[idx]; idx += 1
+        v = out[idx]
+        idx += 1
         results["provider_a"] = v if not isinstance(v, Exception) else {"error": f"job error: {v}", "output": None, "model": "?", "provider_label": "Provider A"}
     if use_b:
-        v = out[idx]; idx += 1
+        v = out[idx]
+        idx += 1
         results["provider_b"] = v if not isinstance(v, Exception) else {"error": f"job error: {v}", "output": None, "model": "?", "provider_label": "Provider B"}
     results["disagreement"] = compute_disagreement(results.get("provider_a"), results.get("provider_b"))
     results["ran_at"] = now_iso()
     results["status"] = "done"
+    # Persist retrieval metadata so the UI can show what fed the LLM
+    results["retrieval"] = {
+        "top_k": top_k,
+        "query": query,
+        "chunks": [{k: v for k, v in r.items() if k != "text"} | {"preview": (r.get("text") or "")[:240]} for r in retrieved],
+        "total_chunks_in_case": rt_count_case(case_id),
+    }
     await db.cases.update_one({"id": case_id}, {"$set": {"ai_results": results, "updated_at": now_iso()}})
 
 

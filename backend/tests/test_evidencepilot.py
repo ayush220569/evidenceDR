@@ -430,7 +430,7 @@ class TestAIAnalysis:
                 pass
     
     def test_analyze_dual_providers(self):
-        """POST /api/cases/{id}/analyze with both providers returns output from BOTH"""
+        """POST /api/cases/{id}/analyze with both providers returns output from BOTH (async with polling)"""
         # Create case with context
         payload = {
             "title": "TEST_AI_Analysis",
@@ -461,17 +461,37 @@ class TestAIAnalysis:
         finally:
             os.unlink(temp_path)
         
-        # Run AI analysis with both providers (allow up to 180s)
+        # Wait for background indexing
+        time.sleep(4)
+        
+        # Run AI analysis (now async - returns immediately with status='running')
         response = requests.post(
             f"{BASE_URL}/api/cases/{case_id}/analyze",
             json={"use_provider_a": True, "use_provider_b": True},
-            timeout=180
+            timeout=30
         )
         assert response.status_code == 200, f"Analyze failed: {response.text}"
         data = response.json()
+        assert data.get("status") == "running", f"Expected status='running', got {data}"
+        print(f"✓ Analysis started: {data}")
         
-        # Verify both providers returned output
-        ai_results = data.get("ai_results", {})
+        # Poll for completion (max 3 minutes)
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            time.sleep(5)
+            status_resp = requests.get(f"{BASE_URL}/api/cases/{case_id}/analyze/status")
+            if status_resp.status_code == 200:
+                status = status_resp.json()
+                if status.get("status") == "done":
+                    print(f"✓ Analysis completed")
+                    break
+        
+        # Get case with results
+        case_resp = requests.get(f"{BASE_URL}/api/cases/{case_id}")
+        assert case_resp.status_code == 200
+        case_data = case_resp.json()
+        ai_results = case_data.get("ai_results", {})
+        
         assert ai_results.get("ran_at") is not None, "AI analysis did not complete"
         
         provider_a = ai_results.get("provider_a")
@@ -498,6 +518,13 @@ class TestAIAnalysis:
         assert disagreement is not None, "Disagreement not computed"
         assert "layer_agreement" in disagreement
         print(f"✓ Disagreement: layer_agreement={disagreement.get('layer_agreement')}, delta={disagreement.get('confidence_delta')}")
+        
+        # Verify retrieval metadata (new RAG feature)
+        retrieval = ai_results.get("retrieval")
+        assert retrieval is not None, "Retrieval metadata missing"
+        assert "top_k" in retrieval
+        assert "chunks" in retrieval
+        print(f"✓ Retrieval: top_k={retrieval['top_k']}, chunks={len(retrieval['chunks'])}")
 
 
 class TestExport:

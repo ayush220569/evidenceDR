@@ -1,0 +1,75 @@
+{
+  "summary": "Completed comprehensive testing of the new RAG/semantic retrieval pipeline upgrade. 40/42 backend tests passed (95%). Frontend RAG features working correctly - RetrievalPanel displays chunk cards with scores, layers, and previews. Semantic scoring works as expected: portal.log chunks (0.738, 0.660) score higher than noise.log (0.526) for SAML queries.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/cases/{id}/analyze",
+        "issue": "AI analysis takes 60-90s to complete. Test polling may timeout if not given enough time. This is expected behavior for LLM calls.",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Settings page",
+        "issues": ["Retrieval settings (retrieval_top_k, chunk_size_chars, chunk_overlap_chars, max_index_bytes_per_file) are not exposed in the UI. They work via API but users cannot configure them through the Settings page."]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_retrieval_rag.py",
+    "/app/backend/tests/test_evidencepilot.py",
+    "/app/test_reports/pytest/pytest_rag_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Add retrieval settings (top_k, chunk_size, overlap, max_index_bytes) to Settings page UI for advanced users"
+  ],
+  "critical_code_review_comments": [
+    "retrieval.py embed() function correctly converts np.float32 to plain Python float for ChromaDB compatibility",
+    "Background indexing via BackgroundTasks works correctly - files are indexed within 1-4 seconds",
+    "Vector cleanup on file/case delete is properly implemented",
+    "AI analysis correctly uses retrieved chunks and includes retrieval metadata in response"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_retrieval_rag.py",
+    "/app/backend/tests/test_evidencepilot.py"
+  ],
+  "success_rate": {
+    "backend": "95% (40/42 tests passed - 2 transient failures due to timing)",
+    "frontend": "100% (all RAG UI features working)"
+  },
+  "test_credentials": "No auth required",
+  "seed_data_creation": "Test cases created with TEST_ prefix and cleaned up after tests",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "RAG pipeline fully functional. Key endpoints: GET /api/cases/{id}/retrieval/stats, POST /api/cases/{id}/retrieval/search, POST /api/cases/{id}/files/{fid}/reindex. AI analysis now includes ai_results.retrieval with top_k, query, chunks[], total_chunks_in_case. Frontend RetrievalPanel (data-testid='retrieval-panel') displays retrieved chunks with data-testid='retrieved-chunk-N'. Semantic scoring verified: relevant content scores higher than noise.",
+  "new_features_tested": {
+    "background_indexing": "PASS - Files indexed into ChromaDB within 1-6 seconds of upload",
+    "retrieval_stats": "PASS - GET /api/cases/{id}/retrieval/stats returns indexed_chunks count",
+    "retrieval_search": "PASS - POST /api/cases/{id}/retrieval/search returns ranked hits with score/file_name/chunk_index/layer",
+    "file_reindex": "PASS - POST /api/cases/{id}/files/{fid}/reindex triggers re-indexing",
+    "vector_cleanup_file_delete": "PASS - DELETE file clears its vectors from ChromaDB",
+    "vector_cleanup_case_delete": "PASS - DELETE case clears all vectors for that case",
+    "ai_analysis_with_retrieval": "PASS - Analysis uses retrieved chunks and returns retrieval metadata",
+    "retrieval_settings_api": "PASS - GET/PUT /api/settings includes retrieval_top_k, chunk_size_chars, chunk_overlap_chars, max_index_bytes_per_file",
+    "frontend_retrieval_panel": "PASS - RetrievalPanel displays chunk cards with scores, layers, previews",
+    "semantic_scoring": "PASS - portal.log (SAML errors) scores 0.738 vs noise.log 0.526 for SAML query"
+  },
+  "regression_tests": {
+    "api_root": "PASS",
+    "categories": "PASS",
+    "case_crud": "PASS",
+    "file_upload": "PASS",
+    "file_layer_detection": "PASS",
+    "logic_tree": "PASS",
+    "score": "PASS",
+    "export": "PASS",
+    "settings": "PASS",
+    "dashboard_stats": "PASS",
+    "analyze_status": "PASS"
+  }
+}

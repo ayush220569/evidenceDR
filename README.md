@@ -17,12 +17,13 @@ Support engineers, technical analysts, and SMEs working ArcGIS Online / ArcGIS E
 * Drag-and-drop multi-file uploader (`.log .txt .json .xml .csv .har .zip .dmp .evtx .png .pdf`)
 * Automatic layer detection (Browser / Web tier / Portal / Server / Data Store / Pro client / OS)
 * Safe zip extraction with path-traversal protection
+* **Semantic retrieval (RAG) over uploaded files** — local fastembed (BAAI/bge-small-en-v1.5, ONNX, no torch) + ChromaDB persistent vector store. Embeddings run inside your VM (no log data egress) and survive across cases/restarts.
 * Gamified logic tree (per-category questions; mission-flow UX)
-* **Dual-AI analysis** — runs Provider A & Provider B in parallel and shows a diff
+* **Dual-AI analysis** — runs Provider A & Provider B in parallel and shows a diff, fed by retrieved chunks
 * Evidence completeness scoring (context fields × layer coverage)
 * First-pass readiness meter + escalation checklist
 * Export to **Markdown / JSON / printable HTML**
-* Configurable retention, max upload size, and escalation contact
+* Configurable retention, max upload size, escalation contact, and RAG tuning (top-k / chunk size / overlap / per-file index cap)
 
 **Architecture**
 
@@ -31,12 +32,13 @@ Support engineers, technical analysts, and SMEs working ArcGIS Online / ArcGIS E
                 |
                 ▼  REACT_APP_BACKEND_URL/api
 [ FastAPI + Motor (async MongoDB) ]   ← backend  (port 8001)
-                |
-                ▼
-[ MongoDB ]   +   [ /backend/uploads/<case_id>/ ]
+        |               |              |
+        ▼               ▼              ▼
+  [ MongoDB ]   [ /backend/uploads/<case_id>/ ]   [ ChromaDB persistent /backend/chroma_data/ ]
+                                                  + fastembed (local ONNX, ~80MB on first use)
 ```
 
-Both AI providers go through the **EvidencePilot AI provider abstraction** (`backend/ai_providers.py`) which uses the `emergentintegrations` library. By default both providers share the **Emergent Universal LLM Key**; per-provider override keys can be set in **Settings**.
+Both AI providers go through the **EvidencePilot AI provider abstraction** (`backend/ai_providers.py`) which uses the `emergentintegrations` library. By default both providers share the **Emergent Universal LLM Key**; per-provider override keys can be set in **Settings**. The prompt that goes to each provider contains only the **top-K semantically-relevant chunks** retrieved from ChromaDB — never the raw log bytes.
 
 ---
 
@@ -89,6 +91,9 @@ DB_NAME="evidencepilot"
 CORS_ORIGINS="*"
 EMERGENT_LLM_KEY="sk-emergent-..."
 UPLOAD_DIR="/app/backend/uploads"
+CHROMA_DIR="/app/backend/chroma_data"
+# optional override of embedding model (fastembed-compatible)
+# EVIDENCEPILOT_EMBED_MODEL="BAAI/bge-small-en-v1.5"
 ```
 
 ### `frontend/.env.example`
@@ -162,6 +167,10 @@ In-app **Settings**:
 | Retention (days) | 30 | Used for scheduled cleanup (manual today) |
 | Max upload (MB) | 512 | Per-file cap |
 | Escalation contact | `corp.support.help@esri.ca` | Editable per deployment |
+| Retrieval top-K | 40 | Chunks fed to each LLM per analysis run |
+| Chunk size (chars) | 800 | Length of each indexed text chunk |
+| Chunk overlap (chars) | 100 | Overlap between consecutive chunks |
+| Max index bytes / file | 10 MB | Per-file cap when indexing into ChromaDB |
 
 ---
 

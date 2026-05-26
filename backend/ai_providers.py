@@ -57,20 +57,26 @@ OUTPUT_SCHEMA = {
 }
 
 
-def build_user_prompt(case: dict, file_excerpts: list) -> str:
+def build_user_prompt(case: dict, retrieved_chunks: list) -> str:
     ctx = case.get("context", {}) or {}
     cat = case.get("category_name", "Unknown")
     logic = case.get("logic_answers", []) or []
     logic_str = "\n".join([f"  - Q: {a.get('question')} -> A: {a.get('answer_label')}" for a in logic]) or "  (no logic tree answered yet)"
 
-    files_block = ""
-    if file_excerpts:
-        for fe in file_excerpts:
-            files_block += f"\n--- FILE: {fe['name']} (layer={fe.get('layer','unknown')}, size={fe.get('size',0)} bytes) ---\n"
-            files_block += fe.get("excerpt", "(no text extracted)")[:4000]
-            files_block += "\n"
+    chunks_block = ""
+    if retrieved_chunks:
+        chunks_block = (
+            "\nThese are the TOP semantically-relevant snippets retrieved from the uploaded evidence (ranked by similarity to the case context).\n"
+            "Each snippet shows: file_name [layer] (chunk #, similarity score).\n"
+        )
+        for r in retrieved_chunks:
+            chunks_block += (
+                f"\n--- {r.get('file_name','?')} [{r.get('layer','unknown')}] "
+                f"(chunk {r.get('chunk_index','?')}, score {r.get('score',0):.3f}) ---\n"
+                f"{(r.get('text') or '')[:1800]}\n"
+            )
     else:
-        files_block = "\n(no files uploaded yet)\n"
+        chunks_block = "\n(no evidence chunks retrieved — likely no files uploaded yet)\n"
 
     return f"""CASE CONTEXT
 Case title: {case.get('title','(untitled)')}
@@ -88,14 +94,14 @@ Customer environment notes: {ctx.get('environment_notes','(none)')}
 LOGIC TREE ANSWERS
 {logic_str}
 
-UPLOADED FILES (text excerpts, truncated):
-{files_block}
+RETRIEVED EVIDENCE (semantic search over uploaded files):
+{chunks_block}
 
 TASK
 Analyze the above and respond with STRICTLY VALID JSON matching this schema:
 {json.dumps(OUTPUT_SCHEMA, indent=2)}
 
-Remember: cite specific filenames in supporting_evidence. If evidence is missing, populate evidence_gaps and missing_evidence accordingly. Confidence must be calibrated to evidence quality.
+Remember: cite specific filenames in supporting_evidence (use names from the snippets above). If evidence is missing, populate evidence_gaps and missing_evidence accordingly. Confidence must be calibrated to evidence quality. Higher retrieval scores ⇒ more relevant snippets; treat low-score snippets with skepticism.
 """
 
 
@@ -119,7 +125,7 @@ def _extract_json(text: str) -> dict:
         return {"_error": f"json parse failed: {e}", "_raw": blob[:500]}
 
 
-async def run_provider(provider_label: str, model_provider: str, model_name: str, case: dict, file_excerpts: list,
+async def run_provider(provider_label: str, model_provider: str, model_name: str, case: dict, retrieved_chunks: list,
                        api_key_override: Optional[str] = None) -> dict:
     """Run a single provider analysis. Returns dict with provider info + parsed JSON output."""
     api_key = api_key_override or os.environ.get("EMERGENT_LLM_KEY")
@@ -139,7 +145,7 @@ async def run_provider(provider_label: str, model_provider: str, model_name: str
             system_message=SYSTEM_PROMPT,
         ).with_model(model_provider, model_name)
 
-        prompt = build_user_prompt(case, file_excerpts)
+        prompt = build_user_prompt(case, retrieved_chunks)
         response_text = await chat.send_message(UserMessage(text=prompt))
         parsed = _extract_json(response_text)
         return {
