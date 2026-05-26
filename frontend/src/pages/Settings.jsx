@@ -65,6 +65,26 @@ export default function Settings() {
           </div>
         </div>
         <div className="ep-card p-6 lg:col-span-2">
+          <div className="label-overline mb-4">Retrieval / RAG tuning</div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+            <Field label="Retrieval top-K">
+              <input type="number" min="1" max="200" value={s.retrieval_top_k || 40} onChange={e => upd("retrieval_top_k", Number(e.target.value))} className="w-full px-3 py-2" data-testid="retrieval-top-k-input" />
+            </Field>
+            <Field label="Chunk size (chars)">
+              <input type="number" min="100" max="4000" value={s.chunk_size_chars || 800} onChange={e => upd("chunk_size_chars", Number(e.target.value))} className="w-full px-3 py-2" data-testid="chunk-size-input" />
+            </Field>
+            <Field label="Chunk overlap (chars)">
+              <input type="number" min="0" max="500" value={s.chunk_overlap_chars || 100} onChange={e => upd("chunk_overlap_chars", Number(e.target.value))} className="w-full px-3 py-2" data-testid="chunk-overlap-input" />
+            </Field>
+            <Field label="Max index bytes / file">
+              <input type="number" min="100000" value={s.max_index_bytes_per_file || 10485760} onChange={e => upd("max_index_bytes_per_file", Number(e.target.value))} className="w-full px-3 py-2 font-mono text-xs" data-testid="max-index-bytes-input" />
+            </Field>
+          </div>
+          <div className="text-[11px] text-[#71717A] mt-4 font-mono">
+            {"// Semantic search runs locally via fastembed (BAAI/bge-small-en-v1.5) + ChromaDB persistent vector store at /backend/chroma_data."}
+          </div>
+        </div>
+        <div className="ep-card p-6 lg:col-span-2">
           <div className="label-overline mb-2">Sensitive data warning</div>
           <p className="text-sm text-[#A1A1AA]">
             Uploaded logs may contain credentials, tokens, or PII. The app never displays API keys in masked form (••••), and stored secrets are server-side only. Audit the retention setting above to match your org policy.

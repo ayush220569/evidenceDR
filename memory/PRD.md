@@ -33,6 +33,17 @@ Build a production-oriented full-stack web app for ArcGIS / Enterprise / Pro sup
 - README with full Windows VM deployment guide (NSSM, IIS reverse proxy)
 - 22/23 backend tests + 100% frontend smoke tests passed (testing_agent_v3 iter 1)
 
+## Upgraded in v1.1 (2026-02-10) — RAG / semantic retrieval
+- Replaced naive truncation pipeline (8KB/file, 30KB total) with **full RAG**:
+  - Embeddings: **fastembed** (BAAI/bge-small-en-v1.5, local ONNX, no torch) — runs entirely inside the VM, no log content sent over the network for embedding
+  - Vector store: **ChromaDB PersistentClient** at `/app/backend/chroma_data` — survives backend restarts, single `case_evidence` collection scoped by `case_id` + `file_id` metadata
+  - Chunking: character-window (default 800 chars, 100 overlap) with paragraph-boundary preference; per-file cap 10 MB
+- New endpoints: `GET/POST /api/cases/{id}/retrieval/{stats,search}`, `POST /api/cases/{id}/files/{fid}/reindex`
+- Wired into upload pipeline (BackgroundTasks) and zip extraction; file/case delete now purges vectors
+- `_run_analysis_job` builds a query from case context + symptom clues + logic answers, retrieves top-K (default 40), and feeds chunks to both providers; persists `ai_results.retrieval` metadata
+- Frontend: new **Retrieved Evidence (RAG)** panel in Case Workspace → AI Comparison tab; Settings page exposes top-K / chunk size / overlap / max index bytes
+- Tested: 40/42 backend tests + 100% frontend (testing_agent_v3 iter 2). Semantic scoring verified — relevant SAML chunks scored 0.738 vs irrelevant noise 0.526.
+
 ## Backlog / future
 - P1: Auth (AD / SSO / IIS auth front)
 - P1: Scheduled retention purge job
