@@ -162,7 +162,7 @@ In-app **Settings**:
 
 | Setting | Default | Notes |
 |---|---|---|
-| Provider A | OpenAI / `gpt-5.2` | Override key field accepts any OpenAI-compatible key |
+| Provider A | OpenAI / `gpt-5.5` | Override key field accepts any OpenAI-compatible key |
 | Provider B | Anthropic / `claude-sonnet-4-5-20250929` | Labeled "Microsoft / Copilot-style" — change `provider/model` to point at Azure OpenAI or other compatible endpoints |
 | Retention (days) | 30 | Used for scheduled cleanup (manual today) |
 | Max upload (MB) | 512 | Per-file cap |

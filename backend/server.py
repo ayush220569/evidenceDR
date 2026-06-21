@@ -86,8 +86,8 @@ class AnalyzeRequest(BaseModel):
 
 
 class SettingsModel(BaseModel):
-    provider_a_label: str = "OpenAI GPT-5.2"
-    provider_a_model: str = "gpt-5.2"
+    provider_a_label: str = "OpenAI GPT-5.5"
+    provider_a_model: str = "gpt-5.5"
     provider_a_provider: str = "openai"
     provider_a_api_key: Optional[str] = ""
     provider_b_label: str = "Microsoft / Copilot-style (Claude Sonnet 4.5)"
@@ -519,9 +519,9 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
     coros = []
     if use_a:
         coros.append(run_provider(
-            provider_label=settings.get("provider_a_label", "OpenAI GPT-5.2"),
+            provider_label=settings.get("provider_a_label", "OpenAI GPT-5.5"),
             model_provider=settings.get("provider_a_provider", "openai"),
-            model_name=settings.get("provider_a_model", "gpt-5.2"),
+            model_name=settings.get("provider_a_model", "gpt-5.5"),
             case=c, retrieved_chunks=retrieved,
             api_key_override=(settings.get("provider_a_api_key") or None),
         ))

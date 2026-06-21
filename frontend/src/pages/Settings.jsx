@@ -4,7 +4,7 @@ import { PageHeader } from "../components/UIBits";
 import { FloppyDisk } from "@phosphor-icons/react";
 
 const PROVIDER_OPTIONS = {
-  openai: ["gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-4o", "gpt-4.1"],
+  openai: ["gpt-5.5", "gpt-5.5-pro", "gpt-5.2", "gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-4o", "gpt-4.1"],
   anthropic: ["claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001", "claude-opus-4-5-20251101", "claude-4-sonnet-20250514"],
   gemini: ["gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-pro", "gemini-2.5-flash"],
 };
