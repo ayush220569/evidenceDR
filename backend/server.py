@@ -28,6 +28,7 @@ from retrieval import (
     clear_case as rt_clear_case,
     count_case as rt_count_case,
     build_query as rt_build_query,
+    run_sync as rt_run_sync,
 )
 from orchestrator import orchestrate as run_orchestrator
 
@@ -251,11 +252,16 @@ class FileIndexJob:
 
 # ---- Files ----
 async def _index_file_bg(job: FileIndexJob):
-    """Background task: read file text up to max_bytes and index into ChromaDB."""
+    """Background task: read file text up to max_bytes and index into ChromaDB.
+
+    Routes the (sync) fastembed + chromadb work through the dedicated retrieval thread
+    so the event loop stays responsive to concurrent API calls.
+    """
     try:
         text = extract_text(job.stored_path, max_bytes=job.max_bytes)
-        if text and not text.startswith("("):  # skip binary placeholders
-            n = rt_index_file(job.case_id, job.file_id, job.name, job.layer, text, config=job.cfg)
+        if text and not text.startswith("("):
+            from retrieval import run_sync as rt_run_sync
+            n = await rt_run_sync(rt_index_file, job.case_id, job.file_id, job.name, job.layer, text, job.cfg)
             logger.info(f"Indexed {n} chunks for case={job.case_id} file={job.name}")
     except Exception as e:
         logger.exception(f"Indexing failed for {job.name}: {e}")
@@ -342,7 +348,7 @@ async def delete_file(case_id: str, file_id: str):
     except Exception:
         pass
     try:
-        rt_clear_file(case_id, file_id)
+        await rt_run_sync(rt_clear_file, case_id, file_id)
     except Exception:
         logger.exception("vector cleanup failed")
     await db.cases.update_one({"id": case_id}, {"$pull": {"files": {"id": file_id}}, "$set": {"updated_at": now_iso()}})
@@ -438,7 +444,8 @@ class RetrievalQuery(BaseModel):
 
 @api.get("/cases/{case_id}/retrieval/stats")
 async def retrieval_stats(case_id: str):
-    return {"case_id": case_id, "indexed_chunks": rt_count_case(case_id)}
+    n = await rt_run_sync(rt_count_case, case_id)
+    return {"case_id": case_id, "indexed_chunks": n}
 
 
 @api.post("/cases/{case_id}/retrieval/search")
@@ -447,8 +454,9 @@ async def retrieval_search(case_id: str, payload: RetrievalQuery):
     if not c:
         raise HTTPException(404, "Case not found")
     q = payload.query or rt_build_query(c)
-    hits = rt_retrieve(case_id, q, top_k=payload.top_k)
-    return {"query": q, "hits": hits, "indexed_chunks": rt_count_case(case_id)}
+    hits = await rt_run_sync(rt_retrieve, case_id, q, payload.top_k)
+    indexed = await rt_run_sync(rt_count_case, case_id)
+    return {"query": q, "hits": hits, "indexed_chunks": indexed}
 
 
 @api.post("/cases/{case_id}/files/{file_id}/reindex")
@@ -554,7 +562,7 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
         "top_k": top_k,
         "query": query,
         "chunks": [{k: v for k, v in r.items() if k != "text"} | {"preview": (r.get("text") or "")[:240]} for r in retrieved],
-        "total_chunks_in_case": rt_count_case(case_id),
+        "total_chunks_in_case": await rt_run_sync(rt_count_case, case_id),
     }
     await db.cases.update_one({"id": case_id}, {"$set": {"ai_results": results, "updated_at": now_iso()}})
 
@@ -610,7 +618,7 @@ async def _run_orchestrator_job(case_id: str):
     # Pull more chunks than the fast path: 200 for map, separate 25 for critique
     all_chunks: List[dict] = []
     try:
-        all_chunks = rt_retrieve(case_id, query, top_k=200)
+        all_chunks = await rt_run_sync(rt_retrieve, case_id, query, 200)
     except Exception:
         logger.exception("orchestrator retrieval failed")
 
@@ -628,7 +636,11 @@ async def _run_orchestrator_job(case_id: str):
     evidence_sample: List[dict] = []
     try:
         # Distinct sample for critique: re-query with a slightly different bias toward errors
-        evidence_sample = rt_retrieve(case_id, query + "\nERROR FATAL Exception ACCESS_DENIED 500 502 timeout", top_k=25)
+        evidence_sample = await rt_run_sync(
+            rt_retrieve, case_id,
+            query + "\nERROR FATAL Exception ACCESS_DENIED 500 502 timeout",
+            25,
+        )
     except Exception:
         evidence_sample = all_chunks[:25]
 

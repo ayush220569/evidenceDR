@@ -3,9 +3,13 @@
 - Embeddings: fastembed (BAAI/bge-small-en-v1.5) — runs locally, no network egress for log content
 - Vector store: ChromaDB persistent client on local disk
 - Single collection 'case_evidence' with case_id + file_id metadata for fast per-case scoping
+- All ChromaDB / fastembed calls are pinned to ONE dedicated worker thread (sync_to_async helper below),
+  because chromadb's PersistentClient registry is not safe to share across arbitrary threads.
 """
+import asyncio
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -19,6 +23,17 @@ CHROMA_DIR = Path(os.environ.get("CHROMA_DIR", "/app/backend/chroma_data"))
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 EMBED_MODEL_NAME = os.environ.get("EVIDENCEPILOT_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+
+# Dedicated single-thread executor for ALL chromadb / fastembed work.
+# Pinning to one worker thread sidesteps chromadb's non-thread-safe client registry
+# while keeping the FastAPI event loop free for concurrent API calls.
+_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ep-retrieval")
+
+
+async def run_sync(fn, *args, **kwargs):
+    """Run a sync function in the dedicated retrieval worker thread."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_EXECUTOR, lambda: fn(*args, **kwargs))
 
 
 @dataclass
