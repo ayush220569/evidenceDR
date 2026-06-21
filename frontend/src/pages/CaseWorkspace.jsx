@@ -4,7 +4,9 @@ import { apiClient } from "../lib/api";
 import { PageHeader, ProgressBar, SegmentedMeter, ConfidenceBadge, LayerTag, EmptyState } from "../components/UIBits";
 import FileUploader from "../components/FileUploader";
 import LogicTree from "../components/LogicTree";
-import { Robot, Sparkle, Download, FileText, Code, Browsers, ArrowsClockwise, WarningCircle, CheckCircle, MagnifyingGlass } from "@phosphor-icons/react";
+import ProviderCard from "../components/ProviderCard";
+import RetrievalPanel from "../components/RetrievalPanel";
+import { Robot, Sparkle, Download, FileText, Code, Browsers, ArrowsClockwise, WarningCircle, CheckCircle } from "@phosphor-icons/react";
 
 export default function CaseWorkspace() {
   const { id } = useParams();
@@ -212,99 +214,6 @@ function ContextDisplay({ context }) {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function ProviderCard({ label, data }) {
-  if (!data) return <div className="ep-card p-5 text-sm text-[#71717A]">{label}: not run</div>;
-  if (data.error) return <div className="ep-card p-5"><div className="label-overline mb-2">{label} — {data.model}</div><div className="diff-rem text-sm">{data.error}</div></div>;
-  const out = data.output || {};
-  const conf = out.confidence_score || 0;
-  const level = conf >= 75 ? "high" : conf >= 50 ? "medium" : "low";
-  return (
-    <div className="ep-card p-5" data-testid={`provider-card-${label.replace(/\s+/g, "-").toLowerCase()}`}>
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <div className="label-overline">{label}</div>
-          <div className="font-heading font-bold text-sm mt-0.5">{data.provider_label}</div>
-          <div className="text-[11px] text-[#71717A] font-mono">{data.model}</div>
-        </div>
-        <ConfidenceBadge level={level} score={conf} />
-      </div>
-      <div className="text-sm text-[#A1A1AA] mb-3">{out.triage_summary || "(no summary)"}</div>
-      <div className="text-xs">
-        <div className="label-overline mb-1">Likely layer</div>
-        <span className="tag confidence-high">{out.likely_layer || "?"}</span>
-      </div>
-      <div className="mt-3">
-        <div className="label-overline mb-1">Ranked hypotheses</div>
-        <ul className="text-sm space-y-1.5">
-          {(out.ranked_hypotheses || []).map((h, i) => (
-            <li key={`${h.hypothesis || "h"}-${i}`} className="flex items-start gap-2">
-              <span className="font-mono text-[#71717A] text-xs mt-0.5">{`h${i+1}`}</span>
-              <div className="flex-1">
-                <div className="text-[#fff]">{h.hypothesis}</div>
-                <div className="text-[11px] text-[#71717A] font-mono">conf: {h.confidence} · supporting: {(h.supporting_evidence||[]).join(", ") || "—"}</div>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div className="mt-3">
-        <div className="label-overline mb-1">Next collection steps</div>
-        <ol className="text-sm text-[#A1A1AA] space-y-1 list-decimal list-inside">
-          {(out.next_collection_steps || []).map((s, i) => <li key={`${s.slice(0,40)}-${i}`}>{s}</li>)}
-        </ol>
-      </div>
-      {out.customer_summary && (
-        <div className="mt-3">
-          <div className="label-overline mb-1">Customer-facing draft</div>
-          <div className="terminal-block">{out.customer_summary}</div>
-        </div>
-      )}
-      {out.internal_escalation_summary && (
-        <div className="mt-3">
-          <div className="label-overline mb-1">Internal escalation</div>
-          <div className="terminal-block">{out.internal_escalation_summary}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RetrievalPanel({ r, layers }) {
-  const chunks = r?.chunks || [];
-  return (
-    <div className="ep-card p-5" data-testid="retrieval-panel">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <div className="label-overline flex items-center gap-2"><MagnifyingGlass size={14} weight="duotone" className="text-[#00E5FF]" /> Retrieved Evidence (RAG)</div>
-          <div className="font-heading font-bold text-sm mt-0.5">Top {chunks.length} chunks fed to both providers · {r?.total_chunks_in_case || 0} chunks indexed</div>
-        </div>
-        <span className="tag confidence-high">top-k={r?.top_k}</span>
-      </div>
-      <div className="text-[11px] text-[#71717A] font-mono mb-3">
-        {"// query: "}{(r?.query || "").slice(0, 200)}{(r?.query || "").length > 200 ? "…" : ""}
-      </div>
-      {chunks.length === 0 ? (
-        <div className="text-sm text-[#71717A]">(no chunks retrieved)</div>
-      ) : (
-        <div className="space-y-2 max-h-80 overflow-y-auto">
-          {chunks.map((ch, i) => (
-            <div key={`${ch.file_id || "f"}-${ch.chunk_index ?? i}`} className="border border-white/5 bg-[#0A0A0C] rounded px-3 py-2" data-testid={`retrieved-chunk-${i}`}>
-              <div className="flex items-center gap-2 mb-1 text-[11px]">
-                <span className="font-mono text-[#71717A]">{`#${i+1}`}</span>
-                <span className="font-mono text-[#00E5FF]">{ch.file_name}</span>
-                <span className="font-mono text-[#A1A1AA]">ch{ch.chunk_index}</span>
-                <span className={`tag ${ch.score >= 0.7 ? "confidence-high" : ch.score >= 0.5 ? "confidence-medium" : "confidence-low"}`}>{(ch.score || 0).toFixed(3)}</span>
-                {ch.layer && <span className="tag" style={{ color: layers?.[ch.layer]?.color, borderColor: (layers?.[ch.layer]?.color || "#71717A") + "55" }}>{layers?.[ch.layer]?.name || ch.layer}</span>}
-              </div>
-              <div className="font-mono text-[11.5px] text-[#A1A1AA] whitespace-pre-wrap leading-relaxed">{ch.preview}</div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

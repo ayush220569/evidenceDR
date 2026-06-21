@@ -335,12 +335,11 @@ def score_evidence(case: dict) -> dict:
 
     overall = round(0.6 * context_pct + 0.4 * layer_pct)
 
+    readiness = "low"
     if overall >= 80:
         readiness = "high"
     elif overall >= 50:
         readiness = "medium"
-    else:
-        readiness = "low"
 
     return {
         "context_pct": context_pct,

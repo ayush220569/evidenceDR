@@ -6,11 +6,9 @@
 """
 import os
 import re
-import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
-
-import numpy as np
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -22,38 +20,50 @@ CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 EMBED_MODEL_NAME = os.environ.get("EVIDENCEPILOT_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 
-_client = None
-_collection = None
-_embedder = None
+
+@dataclass
+class IndexConfig:
+    """Tuning parameters for indexing a single file into the vector store."""
+    chunk_chars: int = 800
+    overlap_chars: int = 100
+    max_chunks: int = 4000
+
+
+class _Singletons:
+    """Lazy singletons for ChromaDB client, collection, and the embedder.
+
+    Wrapped in a class so static analyzers see definite assignment for every attribute,
+    and so we avoid module-level `global` declarations.
+    """
+    client: Optional[chromadb.api.client.Client] = None
+    collection = None
+    embedder: Optional[TextEmbedding] = None
 
 
 def _client_get():
-    global _client
-    if _client is None:
-        _client = chromadb.PersistentClient(
+    if _Singletons.client is None:
+        _Singletons.client = chromadb.PersistentClient(
             path=str(CHROMA_DIR),
             settings=ChromaSettings(anonymized_telemetry=False, allow_reset=True),
         )
-    return _client
+    return _Singletons.client
 
 
 def _collection_get():
     """Lazy-create the 'case_evidence' collection (cosine similarity)."""
-    global _collection
-    if _collection is None:
-        _collection = _client_get().get_or_create_collection(
+    if _Singletons.collection is None:
+        _Singletons.collection = _client_get().get_or_create_collection(
             name="case_evidence",
             metadata={"hnsw:space": "cosine"},
         )
-    return _collection
+    return _Singletons.collection
 
 
 def _embedder_get() -> TextEmbedding:
     """Lazy-load fastembed model (first call downloads ~80MB ONNX model)."""
-    global _embedder
-    if _embedder is None:
-        _embedder = TextEmbedding(model_name=EMBED_MODEL_NAME)
-    return _embedder
+    if _Singletons.embedder is None:
+        _Singletons.embedder = TextEmbedding(model_name=EMBED_MODEL_NAME)
+    return _Singletons.embedder
 
 
 def embed(texts: List[str]) -> List[List[float]]:
@@ -96,16 +106,17 @@ def chunk_text(text: str, chunk_chars: int = 800, overlap_chars: int = 100) -> L
 
 # -------- index / retrieve --------
 def index_file(case_id: str, file_id: str, file_name: str, layer: str, text: str,
-               chunk_chars: int = 800, overlap_chars: int = 100, max_chunks: int = 4000) -> int:
+               config: Optional[IndexConfig] = None) -> int:
     """Embed and persist chunks for a single uploaded file. Idempotent: clears existing entries for (case_id, file_id) first."""
+    cfg = config or IndexConfig()
     # remove existing chunks for this file
     clear_file(case_id, file_id)
 
-    chunks = chunk_text(text, chunk_chars=chunk_chars, overlap_chars=overlap_chars)
+    chunks = chunk_text(text, chunk_chars=cfg.chunk_chars, overlap_chars=cfg.overlap_chars)
     if not chunks:
         return 0
-    if len(chunks) > max_chunks:
-        chunks = chunks[:max_chunks]
+    if len(chunks) > cfg.max_chunks:
+        chunks = chunks[:cfg.max_chunks]
 
     ids = [f"{case_id}:{file_id}:{i}" for i in range(len(chunks))]
     metadatas = [

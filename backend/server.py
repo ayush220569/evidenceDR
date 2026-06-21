@@ -1,5 +1,6 @@
 """EvidencePilot AI - FastAPI backend."""
 import asyncio
+from dataclasses import dataclass
 from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, Query, BackgroundTasks
 from fastapi.responses import Response
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from rules import CATEGORIES, LAYERS, CONTEXT_FIELDS, get_logic_tree, score_evid
 from ai_providers import run_provider, compute_disagreement
 from file_utils import extract_text, detect_layer, safe_extract_zip
 from retrieval import (
+    IndexConfig,
     index_file as rt_index_file,
     retrieve as rt_retrieve,
     clear_file as rt_clear_file,
@@ -234,18 +236,38 @@ async def delete_case(case_id: str):
     return {"deleted": case_id}
 
 
+@dataclass
+class FileIndexJob:
+    """Bundle of parameters for the background file-indexing task."""
+    case_id: str
+    file_id: str
+    name: str
+    layer: str
+    stored_path: str
+    cfg: IndexConfig
+    max_bytes: int
+
+
 # ---- Files ----
-async def _index_file_bg(case_id: str, file_id: str, name: str, layer: str, stored_path: str,
-                         chunk_chars: int, overlap_chars: int, max_bytes: int):
+async def _index_file_bg(job: FileIndexJob):
     """Background task: read file text up to max_bytes and index into ChromaDB."""
     try:
-        text = extract_text(stored_path, max_bytes=max_bytes)
+        text = extract_text(job.stored_path, max_bytes=job.max_bytes)
         if text and not text.startswith("("):  # skip binary placeholders
-            n = rt_index_file(case_id, file_id, name, layer, text,
-                              chunk_chars=chunk_chars, overlap_chars=overlap_chars)
-            logger.info(f"Indexed {n} chunks for case={case_id} file={name}")
+            n = rt_index_file(job.case_id, job.file_id, job.name, job.layer, text, config=job.cfg)
+            logger.info(f"Indexed {n} chunks for case={job.case_id} file={job.name}")
     except Exception as e:
-        logger.exception(f"Indexing failed for {name}: {e}")
+        logger.exception(f"Indexing failed for {job.name}: {e}")
+
+
+def _index_config_from_settings(settings: dict) -> tuple[IndexConfig, int]:
+    """Pull retrieval tuning from the persisted settings doc."""
+    cfg = IndexConfig(
+        chunk_chars=int(settings.get("chunk_size_chars", 800)),
+        overlap_chars=int(settings.get("chunk_overlap_chars", 100)),
+    )
+    max_bytes = int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024))
+    return cfg, max_bytes
 
 
 @api.post("/cases/{case_id}/files")
@@ -256,9 +278,7 @@ async def upload_files(case_id: str, background: BackgroundTasks,
         raise HTTPException(404, "Case not found")
     settings = await get_settings_doc()
     max_bytes = int(settings.get("max_upload_mb", 512)) * 1024 * 1024
-    chunk_chars = int(settings.get("chunk_size_chars", 800))
-    overlap_chars = int(settings.get("chunk_overlap_chars", 100))
-    max_index_bytes = int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024))
+    idx_cfg, max_index_bytes = _index_config_from_settings(settings)
 
     saved = []
     cdir = case_dir(case_id)
@@ -293,8 +313,10 @@ async def upload_files(case_id: str, background: BackgroundTasks,
         }
         saved.append(meta)
         # background index — don't block upload response
-        background.add_task(_index_file_bg, case_id, fid, safe_name, detected, str(target),
-                            chunk_chars, overlap_chars, max_index_bytes)
+        background.add_task(_index_file_bg, FileIndexJob(
+            case_id=case_id, file_id=fid, name=safe_name, layer=detected,
+            stored_path=str(target), cfg=idx_cfg, max_bytes=max_index_bytes,
+        ))
 
     await db.cases.update_one(
         {"id": case_id},
@@ -360,9 +382,7 @@ async def extract_zip(case_id: str, file_id: str, background: BackgroundTasks):
     if not target or target.get("ext") != ".zip":
         raise HTTPException(400, "Not a zip file")
     settings = await get_settings_doc()
-    chunk_chars = int(settings.get("chunk_size_chars", 800))
-    overlap_chars = int(settings.get("chunk_overlap_chars", 100))
-    max_index_bytes = int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024))
+    idx_cfg, max_index_bytes = _index_config_from_settings(settings)
 
     cdir = case_dir(case_id) / f"extracted_{file_id}"
     members = safe_extract_zip(target["stored_path"], str(cdir))
@@ -384,8 +404,10 @@ async def extract_zip(case_id: str, file_id: str, background: BackgroundTasks):
             "from_zip": target["name"],
             "indexed": False,
         })
-        background.add_task(_index_file_bg, case_id, fid, name, detected, m,
-                            chunk_chars, overlap_chars, max_index_bytes)
+        background.add_task(_index_file_bg, FileIndexJob(
+            case_id=case_id, file_id=fid, name=name, layer=detected,
+            stored_path=m, cfg=idx_cfg, max_bytes=max_index_bytes,
+        ))
     if new_files:
         await db.cases.update_one({"id": case_id}, {"$push": {"files": {"$each": new_files}}})
     return {"extracted": new_files}
@@ -437,13 +459,13 @@ async def reindex_file(case_id: str, file_id: str, background: BackgroundTasks):
     if not target:
         raise HTTPException(404, "File not found")
     settings = await get_settings_doc()
-    background.add_task(
-        _index_file_bg, case_id, file_id, target["name"], target.get("layer", "unknown"),
-        target["stored_path"],
-        int(settings.get("chunk_size_chars", 800)),
-        int(settings.get("chunk_overlap_chars", 100)),
-        int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024)),
-    )
+    idx_cfg, max_index_bytes = _index_config_from_settings(settings)
+    background.add_task(_index_file_bg, FileIndexJob(
+        case_id=case_id, file_id=file_id, name=target["name"],
+        layer=target.get("layer", "unknown"),
+        stored_path=target["stored_path"],
+        cfg=idx_cfg, max_bytes=max_index_bytes,
+    ))
     return {"status": "indexing", "file_id": file_id}
 
 
@@ -464,8 +486,7 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
         return
     settings = await get_settings_doc()
     top_k = int(settings.get("retrieval_top_k", 40))
-    chunk_chars = int(settings.get("chunk_size_chars", 800))
-    overlap_chars = int(settings.get("chunk_overlap_chars", 100))
+    idx_cfg, _ = _index_config_from_settings(settings)
 
     # Semantic retrieval
     query = rt_build_query(c)
@@ -488,8 +509,7 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
                 })
                 # also try to index it now so subsequent runs use real retrieval
                 try:
-                    rt_index_file(case_id, f["id"], f["name"], f.get("layer", "unknown"), text,
-                                  chunk_chars=chunk_chars, overlap_chars=overlap_chars)
+                    rt_index_file(case_id, f["id"], f["name"], f.get("layer", "unknown"), text, config=idx_cfg)
                 except Exception:
                     pass
 
