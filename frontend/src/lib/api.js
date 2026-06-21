@@ -35,6 +35,10 @@ export const apiClient = {
   // analyze (kicks off background job and returns immediately)
   analyze: (caseId, useA = true, useB = true) => api.post(`/cases/${caseId}/analyze`, { use_provider_a: useA, use_provider_b: useB }, { timeout: 30000 }).then(r => r.data),
   analyzeStatus: (caseId) => api.get(`/cases/${caseId}/analyze/status`).then(r => r.data),
+  // orchestrator (deep investigation with map-reduce + self-critique)
+  orchestrate: (caseId) => api.post(`/cases/${caseId}/orchestrate`, {}, { timeout: 30000 }).then(r => r.data),
+  orchestrateStatus: (caseId) => api.get(`/cases/${caseId}/orchestrate/status`).then(r => r.data),
+  listCasePatterns: (categoryId) => api.get(`/case-patterns`, { params: categoryId ? { category_id: categoryId } : {} }).then(r => r.data),
   // settings
   getSettings: () => api.get("/settings").then(r => r.data),
   saveSettings: (payload) => api.put("/settings", payload).then(r => r.data),

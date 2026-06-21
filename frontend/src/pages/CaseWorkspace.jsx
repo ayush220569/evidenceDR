@@ -6,7 +6,8 @@ import FileUploader from "../components/FileUploader";
 import LogicTree from "../components/LogicTree";
 import ProviderCard from "../components/ProviderCard";
 import RetrievalPanel from "../components/RetrievalPanel";
-import { Robot, Sparkle, Download, FileText, Code, Browsers, ArrowsClockwise, WarningCircle, CheckCircle } from "@phosphor-icons/react";
+import InvestigationReport from "../components/InvestigationReport";
+import { Robot, Sparkle, Download, FileText, Code, Browsers, ArrowsClockwise, WarningCircle, CheckCircle, Detective } from "@phosphor-icons/react";
 
 export default function CaseWorkspace() {
   const { id } = useParams();
@@ -15,6 +16,7 @@ export default function CaseWorkspace() {
   const [meta, setMeta] = useState({ categories: [], layers: {} });
   const [tab, setTab] = useState("evidence");
   const [analyzing, setAnalyzing] = useState(false);
+  const [investigating, setInvestigating] = useState(false);
 
   const reload = () => apiClient.getCase(id).then(setC);
 
@@ -49,6 +51,26 @@ export default function CaseWorkspace() {
     } finally { setAnalyzing(false); }
   };
 
+  const runInvestigation = async () => {
+    setInvestigating(true);
+    setTab("investigation");
+    try {
+      await apiClient.orchestrate(id);
+      // poll every 5s for up to 10 min (orchestrator does more LLM calls)
+      const deadline = Date.now() + 10 * 60 * 1000;
+      while (Date.now() < deadline) {
+        // refresh case so the UI shows live phase progress
+        const fresh = await apiClient.getCase(id);
+        setC(fresh);
+        const status = fresh.ai_results?.orchestrator?.status;
+        if (status === "done" || status === "error" || status === "reduce_failed" || status === "no_evidence") break;
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    } catch (e) {
+      alert(`Investigation failed: ${e.response?.data?.detail || e.message}`);
+    } finally { setInvestigating(false); }
+  };
+
   const setStatus = async (status) => {
     const res = await apiClient.updateCase(id, { status });
     setC(res);
@@ -65,8 +87,11 @@ export default function CaseWorkspace() {
             <button onClick={() => setStatus(c.status === "open" ? "resolved" : "open")} className="btn-ghost" data-testid="toggle-status-btn">
               {c.status === "open" ? "Mark resolved" : "Reopen"}
             </button>
-            <button onClick={runAI} disabled={analyzing} className="btn-primary" data-testid="run-ai-btn">
-              <Robot size={14} weight="duotone" /> {analyzing ? "Analyzing…" : "Run dual-AI"}
+            <button onClick={runAI} disabled={analyzing || investigating} className="btn-ghost" data-testid="run-ai-btn">
+              <Robot size={14} weight="duotone" /> {analyzing ? "Analyzing…" : "Quick Dual-AI"}
+            </button>
+            <button onClick={runInvestigation} disabled={analyzing || investigating} className="btn-primary" data-testid="run-investigation-btn">
+              <Detective size={14} weight="fill" /> {investigating ? "Investigating…" : "Deep Investigation"}
             </button>
           </>
         }
@@ -86,6 +111,7 @@ export default function CaseWorkspace() {
           ["evidence", "Evidence"],
           ["logic", "Logic Tree"],
           ["ai", "AI Comparison"],
+          ["investigation", "Investigation"],
           ["gaps", "Gaps & Next Steps"],
           ["export", "Export"],
         ].map(([k, l]) => (
@@ -134,6 +160,28 @@ export default function CaseWorkspace() {
                   <ArrowsClockwise size={14} /> {analyzing ? "Re-running…" : "Re-run analysis"}
                 </button>
               </div>
+            )}
+          </div>
+        )}
+
+        {tab === "investigation" && (
+          <div data-testid="tab-content-investigation" className="space-y-4">
+            {!c.ai_results?.orchestrator ? (
+              <EmptyState
+                icon={Sparkle}
+                title="No investigation yet"
+                hint="Deep Investigation runs a 4-phase map-reduce + self-critique pipeline over up to 200 retrieved chunks. Slower than the quick dual-AI but evidence-grounded, with persistent memory across cases."
+                action={<button onClick={runInvestigation} disabled={investigating} className="btn-primary" data-testid="investigation-empty-run-btn"><Detective size={14} weight="fill" /> {investigating ? "Running…" : "Run Deep Investigation"}</button>}
+              />
+            ) : (
+              <>
+                <InvestigationReport orch={c.ai_results.orchestrator} />
+                {c.ai_results.orchestrator.status === "done" && (
+                  <button onClick={runInvestigation} disabled={investigating} className="btn-ghost" data-testid="rerun-investigation-btn">
+                    <ArrowsClockwise size={14} /> {investigating ? "Re-running…" : "Re-run investigation"}
+                  </button>
+                )}
+              </>
             )}
           </div>
         )}

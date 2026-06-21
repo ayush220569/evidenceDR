@@ -29,6 +29,7 @@ from retrieval import (
     count_case as rt_count_case,
     build_query as rt_build_query,
 )
+from orchestrator import orchestrate as run_orchestrator
 
 
 ROOT_DIR = Path(__file__).parent
@@ -585,6 +586,131 @@ async def analyze_status(case_id: str):
         "has_a": bool(ai.get("provider_a")),
         "has_b": bool(ai.get("provider_b")),
     }
+
+
+# ---- Orchestrator (deep investigation) ----
+async def _get_priors(category_id: str, limit: int = 6) -> List[dict]:
+    """Retrieve past case_pattern docs for this category, most recent first."""
+    cursor = db.case_patterns.find(
+        {"category_id": category_id},
+        {"_id": 0, "case_id": 0},
+    ).sort("created_at", -1).limit(limit)
+    return await cursor.to_list(length=limit)
+
+
+async def _run_orchestrator_job(case_id: str):
+    """Background job: full 4-phase orchestrator pipeline (plan / map / reduce / critique / memory)."""
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        return
+    settings = await get_settings_doc()
+
+    # Build a rich query and pull a generous chunk set for map-reduce
+    query = rt_build_query(c)
+    # Pull more chunks than the fast path: 200 for map, separate 25 for critique
+    all_chunks: List[dict] = []
+    try:
+        all_chunks = rt_retrieve(case_id, query, top_k=200)
+    except Exception:
+        logger.exception("orchestrator retrieval failed")
+
+    # Fallback if nothing indexed yet: read head-of-file for each file
+    if not all_chunks:
+        for f in c.get("files", []):
+            text = extract_text(f["stored_path"], max_bytes=6000)
+            if text and not text.startswith("("):
+                all_chunks.append({
+                    "text": text, "file_name": f["name"], "file_id": f["id"],
+                    "layer": f.get("layer", "unknown"),
+                    "chunk_index": 0, "score": 0.0,
+                })
+
+    evidence_sample: List[dict] = []
+    try:
+        # Distinct sample for critique: re-query with a slightly different bias toward errors
+        evidence_sample = rt_retrieve(case_id, query + "\nERROR FATAL Exception ACCESS_DENIED 500 502 timeout", top_k=25)
+    except Exception:
+        evidence_sample = all_chunks[:25]
+
+    priors = await _get_priors(c["category_id"])
+
+    api_key = settings.get("provider_a_api_key") or os.environ.get("EMERGENT_LLM_KEY")
+    model_provider = settings.get("provider_a_provider", "openai")
+    model_name = settings.get("provider_a_model", "gpt-5.5")
+
+    try:
+        result = await run_orchestrator(
+            case=c,
+            all_chunks=all_chunks,
+            priors=priors,
+            evidence_sample=evidence_sample,
+            api_key=api_key,
+            model_provider=model_provider,
+            model_name=model_name,
+        )
+    except Exception as e:
+        logger.exception(f"orchestrator failed: {e}")
+        result = {
+            "status": "error",
+            "error": str(e),
+            "started_at": now_iso(),
+            "finished_at": now_iso(),
+        }
+
+    # Persist into ai_results.orchestrator
+    await db.cases.update_one(
+        {"id": case_id},
+        {"$set": {"ai_results.orchestrator": result, "updated_at": now_iso()}},
+    )
+
+    # Phase 5: MEMORY — store fingerprint for future runs
+    fp = result.get("fingerprint") if isinstance(result, dict) else None
+    if fp and result.get("status") == "done":
+        await db.case_patterns.insert_one({**fp, "_id": fp["id"]})
+
+
+@api.post("/cases/{case_id}/orchestrate")
+async def orchestrate_case(case_id: str, background: BackgroundTasks):
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Case not found")
+    # Mark running so the UI can poll
+    await db.cases.update_one(
+        {"id": case_id},
+        {"$set": {
+            "ai_results.orchestrator": {"status": "running", "started_at": now_iso(), "phases": ["plan"]},
+            "updated_at": now_iso(),
+        }},
+    )
+    background.add_task(_run_orchestrator_job, case_id)
+    return {"status": "running", "case_id": case_id}
+
+
+@api.get("/cases/{case_id}/orchestrate/status")
+async def orchestrate_status(case_id: str):
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Case not found")
+    orch = (c.get("ai_results") or {}).get("orchestrator") or {}
+    return {
+        "status": orch.get("status", "idle"),
+        "started_at": orch.get("started_at"),
+        "finished_at": orch.get("finished_at"),
+        "phases": orch.get("phases", []),
+        "stats": orch.get("stats"),
+        "has_report": bool(orch.get("report")),
+    }
+
+
+@api.get("/case-patterns")
+async def list_case_patterns(category_id: Optional[str] = None, limit: int = 50):
+    """Public read of the orchestrator's persistent memory (KB of past root causes)."""
+    q: Dict[str, Any] = {}
+    if category_id:
+        q["category_id"] = category_id
+    cursor = db.case_patterns.find(q, {"_id": 0}).sort("created_at", -1).limit(limit)
+    items = await cursor.to_list(length=limit)
+    return {"patterns": items, "count": len(items)}
 
 
 # ---- Settings ----
