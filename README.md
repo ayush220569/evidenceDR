@@ -38,7 +38,7 @@ Support engineers, technical analysts, and SMEs working ArcGIS Online / ArcGIS E
                                                   + fastembed (local ONNX, ~80MB on first use)
 ```
 
-Both AI providers go through the **OpenAI AI provider abstraction** (`backend/ai_providers.py`) which uses the `emergentintegrations` library. By default both providers share the **OpenAI Universal LLM Key**; per-provider override keys can be set in **Settings**. The prompt that goes to each provider contains only the **top-K semantically-relevant chunks** retrieved from ChromaDB — never the raw log bytes.
+Both AI providers go through the **OpenAI AI provider abstraction** (`backend/ai_providers.py`). By default both providers share the **OpenAI Universal LLM Key**; per-provider override keys can be set in **Settings**. The prompt that goes to each provider contains only the **top-K semantically-relevant chunks** retrieved from ChromaDB — never the raw log bytes.
 
 ---
 
@@ -54,7 +54,7 @@ Both AI providers go through the **OpenAI AI provider abstraction** (`backend/ai
 | (optional) IIS | for reverse proxy / TLS termination |
 | Disk | 5 GB free for app + uploads |
 
-API keys: an **Emergent Universal LLM Key** is provided out-of-the-box. Optional: your own OpenAI key and/or Azure OpenAI / Microsoft endpoint key — configure in **Settings**.
+API keys: an **OpenAI LLM Key** is provided out-of-the-box. Optional: your own OpenAI key and/or Azure OpenAI / Microsoft endpoint key — configure in **Settings**.
 
 ---
 
