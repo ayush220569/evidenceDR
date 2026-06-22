@@ -254,15 +254,19 @@ class FileIndexJob:
 async def _index_file_bg(job: FileIndexJob):
     """Background task: read file text up to max_bytes and index into ChromaDB.
 
-    Routes the (sync) fastembed + chromadb work through the dedicated retrieval thread
-    so the event loop stays responsive to concurrent API calls.
+    Both the disk read (extract_text) and the embed/upsert pipeline are kept off the
+    event loop — disk via asyncio.to_thread, embeddings/chromadb via the pinned
+    single-thread retrieval worker — so concurrent API calls stay responsive.
     """
     try:
-        text = extract_text(job.stored_path, max_bytes=job.max_bytes)
+        text = await asyncio.to_thread(extract_text, job.stored_path, job.max_bytes)
         if text and not text.startswith("("):
-            from retrieval import run_sync as rt_run_sync
             n = await rt_run_sync(rt_index_file, job.case_id, job.file_id, job.name, job.layer, text, job.cfg)
             logger.info(f"Indexed {n} chunks for case={job.case_id} file={job.name}")
+            await db.cases.update_one(
+                {"id": job.case_id, "files.id": job.file_id},
+                {"$set": {"files.$.indexed": True, "files.$.indexed_chunks": n}},
+            )
     except Exception as e:
         logger.exception(f"Indexing failed for {job.name}: {e}")
 
@@ -625,7 +629,7 @@ async def _run_orchestrator_job(case_id: str):
     # Fallback if nothing indexed yet: read head-of-file for each file
     if not all_chunks:
         for f in c.get("files", []):
-            text = extract_text(f["stored_path"], max_bytes=6000)
+            text = await asyncio.to_thread(extract_text, f["stored_path"], 6000)
             if text and not text.startswith("("):
                 all_chunks.append({
                     "text": text, "file_name": f["name"], "file_id": f["id"],

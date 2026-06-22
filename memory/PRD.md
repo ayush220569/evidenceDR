@@ -44,10 +44,21 @@ Build a production-oriented full-stack web app for ArcGIS / Enterprise / Pro sup
 - Frontend: new **Retrieved Evidence (RAG)** panel in Case Workspace → AI Comparison tab; Settings page exposes top-K / chunk size / overlap / max index bytes
 - Tested: 40/42 backend tests + 100% frontend (testing_agent_v3 iter 2). Semantic scoring verified — relevant SAML chunks scored 0.738 vs irrelevant noise 0.526.
 
+## Upgraded in v1.2 (2026-02-11) — Deep Investigation size benchmark
+- Made background indexing fully non-blocking: `extract_text` now goes through `asyncio.to_thread` before the chromadb single-thread worker, so concurrent API calls stay responsive even while embedding multi-MB files.
+- Indexed-chunk count is now persisted back to the case file metadata once indexing completes (`files.indexed=true`, `files.indexed_chunks=N`).
+- Ran `/app/scripts/size_quality_test.py` benchmark over 1 / 5 / 12 MB synthetic SAML-incident logs to characterise the quality cliffs of the orchestrator pipeline. Full write-up: `/app/scripts/SIZE_QUALITY_REPORT.md`. Headline:
+  - ≤ 3 MB → high quality: needle found, root cause + layer correct (B_1MB: 1,581 chunks, 164 s, conf=low, layer=portal)
+  - 3 – 10 MB → degrades: needle still retrieved but synthesis dilutes (D_5MB: 4,000 capped chunks, found=YES but rc_hit=NO, layer=unknown)
+  - > 10 MB → hard byte cap (`max_index_bytes_per_file`) cuts content past 10 MB out entirely
+  - Knobs: lift `IndexConfig.max_chunks` from 4000 → 8000+ in `backend/retrieval.py` and raise `chunk_size_chars` to 1200 in Settings for big-log fidelity.
+
 ## Backlog / future
+- P1: PDF export (currently Markdown / HTML / JSON only)
 - P1: Auth (AD / SSO / IIS auth front)
 - P1: Scheduled retention purge job
+- P1: Expose `max_chunks` as a Settings field (currently a code constant)
 - P2: Richer EVTX & dump parsing
 - P2: Case sharing / templates / multi-tenant
 - P2: Charts on dashboard (Recharts)
-- P2: PDF export
+- P2: Pre-filter large logs by time window before indexing

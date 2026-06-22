@@ -1,0 +1,48 @@
+[
+  {
+    "label": "B_1MB",
+    "size_mb": 1.05,
+    "offset_mb": 0.52,
+    "indexed_chunks": 1581,
+    "map_batches": 8,
+    "chunks_mapped": 200,
+    "orch_time_s": 164.2,
+    "status": "done",
+    "found": true,
+    "rc_hit": true,
+    "conf": "low",
+    "layer": "portal",
+    "findings": 4,
+    "timeline": 3
+  },
+  {
+    "label": "D_5MB",
+    "size_mb": 5.24,
+    "offset_mb": 4.72,
+    "indexed_chunks": 4000,
+    "map_batches": 8,
+    "chunks_mapped": 200,
+    "orch_time_s": 174.0,
+    "status": "done",
+    "found": true,
+    "rc_hit": false,
+    "conf": "low",
+    "layer": "unknown",
+    "findings": 6,
+    "timeline": 6
+  },
+  {
+    "label": "E_12MB",
+    "size_mb": 12.58,
+    "offset_mb": 11.53,
+    "indexed_chunks": 4000,
+    "map_batches": null,
+    "chunks_mapped": null,
+    "orch_time_s": 135.3,
+    "status": "error",
+    "found": false,
+    "rc_hit": false,
+    "conf": null,
+    "layer": null
+  }
+]
