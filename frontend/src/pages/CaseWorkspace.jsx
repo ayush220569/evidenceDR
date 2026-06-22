@@ -7,6 +7,7 @@ import LogicTree from "../components/LogicTree";
 import ProviderCard from "../components/ProviderCard";
 import RetrievalPanel from "../components/RetrievalPanel";
 import InvestigationReport from "../components/InvestigationReport";
+import DiagnosticQualityBadge from "../components/DiagnosticQualityBadge";
 import { Robot, Sparkle, Download, FileText, Code, Browsers, ArrowsClockwise, WarningCircle, CheckCircle, Detective } from "@phosphor-icons/react";
 
 export default function CaseWorkspace() {
@@ -127,6 +128,7 @@ export default function CaseWorkspace() {
       <div className="px-8 py-6">
         {tab === "evidence" && (
           <div className="space-y-6" data-testid="tab-content-evidence">
+            <DiagnosticQualityBadge caseId={id} />
             <FileUploader caseId={id} files={c.files} layers={meta.layers} onChange={setC} />
             <ContextDisplay context={c.context} />
             {cat && (

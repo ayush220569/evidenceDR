@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { apiClient } from "../lib/api";
 import { LayerTag } from "./UIBits";
-import { UploadSimple, Trash, Eye, FileArchive, X } from "@phosphor-icons/react";
+import { UploadSimple, Trash, Eye, FileArchive, X, Warning } from "@phosphor-icons/react";
 
 const LAYER_KEYS = ["browser", "web_tier", "portal", "server", "datastore", "client_pro", "os_system", "unknown"];
 
@@ -9,9 +9,30 @@ export default function FileUploader({ caseId, files, layers, onChange }) {
   const [uploading, setUploading] = useState(false);
   const [drag, setDrag] = useState(false);
   const [preview, setPreview] = useState(null);
+  const [preflight, setPreflight] = useState(null); // { settings, files: [...] } awaiting user confirm
+  const [pendingUpload, setPendingUpload] = useState(null); // FileList held while user reviews
+
+  const runPreflight = async (fileList) => {
+    if (!fileList?.length) return;
+    const items = Array.from(fileList).map(f => ({ name: f.name, size: f.size }));
+    try {
+      const res = await apiClient.uploadPreflight(items);
+      const anyWarnings = res.files.some(f => f.warnings?.length > 0);
+      if (anyWarnings) {
+        setPreflight(res);
+        setPendingUpload(fileList);
+        return;
+      }
+    } catch (e) {
+      // pre-flight is advisory only — failure shouldn't block upload
+    }
+    handleFiles(fileList);
+  };
 
   const handleFiles = async (fileList) => {
     if (!fileList?.length) return;
+    setPreflight(null);
+    setPendingUpload(null);
     setUploading(true);
     try {
       const res = await apiClient.uploadFiles(caseId, Array.from(fileList));
@@ -23,7 +44,7 @@ export default function FileUploader({ caseId, files, layers, onChange }) {
 
   const onDrop = (e) => {
     e.preventDefault(); setDrag(false);
-    handleFiles(e.dataTransfer.files);
+    runPreflight(e.dataTransfer.files);
   };
 
   const setLayer = async (fileId, layer) => {
@@ -63,9 +84,61 @@ export default function FileUploader({ caseId, files, layers, onChange }) {
         <div className="text-xs text-[#71717A] mb-3 font-mono">.log .txt .json .xml .csv .har .zip .dmp .evtx images / pdf</div>
         <label className="btn-primary cursor-pointer inline-flex" data-testid="upload-input-label">
           {uploading ? "Uploading…" : "Choose files"}
-          <input type="file" multiple className="hidden" onChange={e => handleFiles(e.target.files)} data-testid="file-input" />
+          <input type="file" multiple className="hidden" onChange={e => runPreflight(e.target.files)} data-testid="file-input" />
         </label>
       </div>
+
+      {preflight && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6" onClick={() => { setPreflight(null); setPendingUpload(null); }}>
+          <div className="ep-card max-w-2xl w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()} data-testid="preflight-modal">
+            <div className="flex items-center gap-3 p-4 border-b border-white/10">
+              <Warning size={22} weight="duotone" className="text-[#F59E0B]" />
+              <div className="flex-1">
+                <div className="font-heading font-bold uppercase text-sm">Upload pre-flight</div>
+                <div className="text-[11px] text-[#71717A] font-mono">{preflight.files.length} file(s) — review before indexing</div>
+              </div>
+              <button onClick={() => { setPreflight(null); setPendingUpload(null); }} className="text-[#A1A1AA] hover:text-white" data-testid="close-preflight"><X size={20} /></button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {preflight.files.map((f, i) => (
+                <div key={i} className="border border-white/10 rounded p-3 bg-[#0A0A0C]" data-testid={`preflight-file-${i}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-mono text-sm truncate flex-1">{f.name}</div>
+                    <div className="text-[11px] font-mono text-[#71717A] ml-2">{(f.size / 1_000_000).toFixed(2)} MB</div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-[11px] font-mono mb-2">
+                    <div><span className="text-[#71717A]">chunks: </span><span className="text-[#00E5FF]">{f.estimated_chunks ?? "—"}</span></div>
+                    <div><span className="text-[#71717A]">coverage: </span><span className={f.estimated_coverage < 0.5 ? "text-[#F59E0B]" : "text-[#10B981]"}>{(f.estimated_coverage * 100).toFixed(0)}%</span></div>
+                    <div><span className="text-[#71717A]">handler: </span><span>{f.is_binary_handler ? "binary parser" : "text/log"}</span></div>
+                  </div>
+                  {f.warnings?.length > 0 && (
+                    <div className="space-y-1">
+                      {f.warnings.map((w, j) => (
+                        <div key={j} className="flex items-start gap-2 text-[11px] text-[#F59E0B]" data-testid={`preflight-warning-${i}-${j}`}>
+                          <Warning size={12} className="mt-0.5 flex-shrink-0" />
+                          <span>{w}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div className="border border-white/5 rounded p-2 text-[11px] font-mono text-[#71717A]">
+                Current caps · max_chunks={preflight.settings.max_chunks_per_file.toLocaleString()} ·
+                index_bytes={(preflight.settings.max_index_bytes_per_file / 1_000_000).toFixed(0)}MB ·
+                mode={preflight.settings.index_read_mode}
+                <div className="text-[10px] mt-1">Adjust in Settings → Retrieval.</div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-white/10 flex gap-2 justify-end">
+              <button onClick={() => { setPreflight(null); setPendingUpload(null); }} className="btn-secondary" data-testid="preflight-cancel">Cancel</button>
+              <button onClick={() => handleFiles(pendingUpload)} className="btn-primary" data-testid="preflight-proceed">Upload anyway</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {files?.length > 0 && (
         <div className="mt-4 border border-white/10 rounded-md overflow-hidden">

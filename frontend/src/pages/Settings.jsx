@@ -66,7 +66,7 @@ export default function Settings() {
         </div>
         <div className="ep-card p-6 lg:col-span-2">
           <div className="label-overline mb-4">Retrieval / RAG tuning</div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
             <Field label="Retrieval top-K">
               <input type="number" min="1" max="200" value={s.retrieval_top_k || 40} onChange={e => upd("retrieval_top_k", Number(e.target.value))} className="w-full px-3 py-2" data-testid="retrieval-top-k-input" />
             </Field>
@@ -76,12 +76,22 @@ export default function Settings() {
             <Field label="Chunk overlap (chars)">
               <input type="number" min="0" max="500" value={s.chunk_overlap_chars || 100} onChange={e => upd("chunk_overlap_chars", Number(e.target.value))} className="w-full px-3 py-2" data-testid="chunk-overlap-input" />
             </Field>
+            <Field label="Max chunks / file">
+              <input type="number" min="100" max="50000" value={s.max_chunks_per_file || 10000} onChange={e => upd("max_chunks_per_file", Number(e.target.value))} className="w-full px-3 py-2" data-testid="max-chunks-input" />
+            </Field>
             <Field label="Max index bytes / file">
               <input type="number" min="100000" value={s.max_index_bytes_per_file || 10485760} onChange={e => upd("max_index_bytes_per_file", Number(e.target.value))} className="w-full px-3 py-2 font-mono text-xs" data-testid="max-index-bytes-input" />
             </Field>
+            <Field label="Index read mode">
+              <select value={s.index_read_mode || "tail_first"} onChange={e => upd("index_read_mode", e.target.value)} className="w-full px-3 py-2 font-mono text-xs" data-testid="index-read-mode-select">
+                <option value="head">head — first N bytes (legacy)</option>
+                <option value="tail_first">tail_first — 35% head + 65% tail (recommended)</option>
+                <option value="windowed">windowed — 4 evenly-spaced windows</option>
+              </select>
+            </Field>
           </div>
           <div className="text-[11px] text-[#71717A] mt-4 font-mono">
-            {"// Semantic search runs locally via fastembed (BAAI/bge-small-en-v1.5) + ChromaDB persistent vector store at /backend/chroma_data."}
+            {"// Hybrid retrieval: semantic (fastembed/BAAI/bge-small-en-v1.5) + lexical severity filter, RRF-fused. For files > max_index_bytes, sliding-window indexing samples the tail where errors usually live."}
           </div>
         </div>
         <div className="ep-card p-6 lg:col-span-2">

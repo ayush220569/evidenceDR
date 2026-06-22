@@ -103,7 +103,9 @@ class SettingsModel(BaseModel):
     retrieval_top_k: int = 40
     chunk_size_chars: int = 800
     chunk_overlap_chars: int = 100
+    max_chunks_per_file: int = 10000
     max_index_bytes_per_file: int = 10 * 1024 * 1024  # 10 MB of text per file indexed
+    index_read_mode: str = "tail_first"  # head | tail_first | windowed
 
 
 # ------------------ Helpers ------------------
@@ -124,11 +126,18 @@ def sanitize_filename(name: str) -> str:
 
 
 async def get_settings_doc() -> dict:
+    """Read the global settings doc, backfilling new fields from SettingsModel defaults
+    so newly-added knobs work without requiring a manual save."""
+    defaults = SettingsModel().model_dump()
     doc = await db.settings.find_one({"_id": "global"}, {"_id": 0})
     if not doc:
-        s = SettingsModel().model_dump()
-        await db.settings.update_one({"_id": "global"}, {"$set": s}, upsert=True)
-        return s
+        await db.settings.update_one({"_id": "global"}, {"$set": defaults}, upsert=True)
+        return defaults
+    # Merge missing fields from defaults (does not overwrite user-set values)
+    missing = {k: v for k, v in defaults.items() if k not in doc}
+    if missing:
+        await db.settings.update_one({"_id": "global"}, {"$set": missing})
+        doc.update(missing)
     return doc
 
 
@@ -248,6 +257,7 @@ class FileIndexJob:
     stored_path: str
     cfg: IndexConfig
     max_bytes: int
+    read_mode: str = "tail_first"
 
 
 # ---- Files ----
@@ -259,26 +269,30 @@ async def _index_file_bg(job: FileIndexJob):
     single-thread retrieval worker — so concurrent API calls stay responsive.
     """
     try:
-        text = await asyncio.to_thread(extract_text, job.stored_path, job.max_bytes)
+        text = await asyncio.to_thread(extract_text, job.stored_path, job.max_bytes, job.read_mode)
         if text and not text.startswith("("):
             n = await rt_run_sync(rt_index_file, job.case_id, job.file_id, job.name, job.layer, text, job.cfg)
-            logger.info(f"Indexed {n} chunks for case={job.case_id} file={job.name}")
+            logger.info(f"Indexed {n} chunks for case={job.case_id} file={job.name} mode={job.read_mode}")
             await db.cases.update_one(
                 {"id": job.case_id, "files.id": job.file_id},
-                {"$set": {"files.$.indexed": True, "files.$.indexed_chunks": n}},
+                {"$set": {"files.$.indexed": True, "files.$.indexed_chunks": n, "files.$.read_mode": job.read_mode}},
             )
     except Exception as e:
         logger.exception(f"Indexing failed for {job.name}: {e}")
 
 
-def _index_config_from_settings(settings: dict) -> tuple[IndexConfig, int]:
+def _index_config_from_settings(settings: dict) -> tuple[IndexConfig, int, str]:
     """Pull retrieval tuning from the persisted settings doc."""
     cfg = IndexConfig(
         chunk_chars=int(settings.get("chunk_size_chars", 800)),
         overlap_chars=int(settings.get("chunk_overlap_chars", 100)),
+        max_chunks=int(settings.get("max_chunks_per_file", 10000)),
     )
     max_bytes = int(settings.get("max_index_bytes_per_file", 10 * 1024 * 1024))
-    return cfg, max_bytes
+    read_mode = settings.get("index_read_mode", "tail_first")
+    if read_mode not in ("head", "tail_first", "windowed"):
+        read_mode = "tail_first"
+    return cfg, max_bytes, read_mode
 
 
 @api.post("/cases/{case_id}/files")
@@ -289,7 +303,7 @@ async def upload_files(case_id: str, background: BackgroundTasks,
         raise HTTPException(404, "Case not found")
     settings = await get_settings_doc()
     max_bytes = int(settings.get("max_upload_mb", 512)) * 1024 * 1024
-    idx_cfg, max_index_bytes = _index_config_from_settings(settings)
+    idx_cfg, max_index_bytes, read_mode = _index_config_from_settings(settings)
 
     saved = []
     cdir = case_dir(case_id)
@@ -310,7 +324,7 @@ async def upload_files(case_id: str, background: BackgroundTasks,
                     raise HTTPException(413, f"File {safe_name} exceeds max upload size of {settings['max_upload_mb']}MB")
                 out.write(chunk)
 
-        excerpt = extract_text(str(target), max_bytes=20000)
+        excerpt = extract_text(str(target), max_bytes=20000, mode="head")
         detected = layer if layer and layer in LAYERS else detect_layer(safe_name, excerpt)
         meta = {
             "id": fid,
@@ -327,6 +341,7 @@ async def upload_files(case_id: str, background: BackgroundTasks,
         background.add_task(_index_file_bg, FileIndexJob(
             case_id=case_id, file_id=fid, name=safe_name, layer=detected,
             stored_path=str(target), cfg=idx_cfg, max_bytes=max_index_bytes,
+            read_mode=read_mode,
         ))
 
     await db.cases.update_one(
@@ -380,7 +395,7 @@ async def preview_file(case_id: str, file_id: str, max_bytes: int = 20000):
     target = next((f for f in c.get("files", []) if f["id"] == file_id), None)
     if not target:
         raise HTTPException(404, "File not found")
-    text = extract_text(target["stored_path"], max_bytes=max_bytes)
+    text = extract_text(target["stored_path"], max_bytes=max_bytes, mode="head")
     return {"name": target["name"], "size": target["size"], "layer": target["layer"], "text": text}
 
 
@@ -393,7 +408,7 @@ async def extract_zip(case_id: str, file_id: str, background: BackgroundTasks):
     if not target or target.get("ext") != ".zip":
         raise HTTPException(400, "Not a zip file")
     settings = await get_settings_doc()
-    idx_cfg, max_index_bytes = _index_config_from_settings(settings)
+    idx_cfg, max_index_bytes, read_mode = _index_config_from_settings(settings)
 
     cdir = case_dir(case_id) / f"extracted_{file_id}"
     members = safe_extract_zip(target["stored_path"], str(cdir))
@@ -401,7 +416,7 @@ async def extract_zip(case_id: str, file_id: str, background: BackgroundTasks):
     for m in members:
         name = sanitize_filename(Path(m).name)
         size = os.path.getsize(m)
-        excerpt = extract_text(m, max_bytes=20000)
+        excerpt = extract_text(m, max_bytes=20000, mode="head")
         detected = detect_layer(name, excerpt)
         fid = uuid.uuid4().hex[:10]
         new_files.append({
@@ -418,6 +433,7 @@ async def extract_zip(case_id: str, file_id: str, background: BackgroundTasks):
         background.add_task(_index_file_bg, FileIndexJob(
             case_id=case_id, file_id=fid, name=name, layer=detected,
             stored_path=m, cfg=idx_cfg, max_bytes=max_index_bytes,
+            read_mode=read_mode,
         ))
     if new_files:
         await db.cases.update_one({"id": case_id}, {"$push": {"files": {"$each": new_files}}})
@@ -463,6 +479,182 @@ async def retrieval_search(case_id: str, payload: RetrievalQuery):
     return {"query": q, "hits": hits, "indexed_chunks": indexed}
 
 
+# ---- Diagnostic Quality ----
+@api.get("/cases/{case_id}/diagnostic_quality")
+async def diagnostic_quality(case_id: str):
+    """Compose a per-case quality score from indexing coverage, retrieval mode used,
+    severity-bearing-chunk count, and orchestrator confidence. Returned shape is
+    designed to drive a UI badge; numeric fields are 0..1 floats.
+    """
+    c = await db.cases.find_one({"id": case_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Case not found")
+    settings = await get_settings_doc()
+    idx_cfg, max_index_bytes, _ = _index_config_from_settings(settings)
+
+    files = c.get("files") or []
+    total_size = sum(int(f.get("size") or 0) for f in files)
+    indexed_chunks_total = sum(int(f.get("indexed_chunks") or 0) for f in files)
+    indexed_files = sum(1 for f in files if f.get("indexed"))
+
+    # Coverage: how much of the uploaded bytes actually made it into the index
+    # (accounts for both the byte cap and the chunk cap).
+    if total_size > 0 and files:
+        per_file_bytes_indexed = []
+        for f in files:
+            sz = int(f.get("size") or 0)
+            ext = (f.get("ext") or "").lower()
+            # binary handlers produce condensed text — coverage doesn't apply, treat as 1.0
+            if ext in (".evtx", ".dmp", ".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif"):
+                per_file_bytes_indexed.append(sz)
+                continue
+            chunks = int(f.get("indexed_chunks") or 0)
+            bytes_via_chunks = chunks * idx_cfg.chunk_chars
+            bytes_via_cap = min(sz, max_index_bytes)
+            per_file_bytes_indexed.append(min(sz, bytes_via_chunks, bytes_via_cap))
+        indexed_bytes_total = sum(per_file_bytes_indexed)
+        coverage = min(1.0, indexed_bytes_total / total_size) if total_size else 0.0
+    else:
+        coverage = 0.0
+
+    # Severity-bearing chunks surfaced during retrieval (uses the live hybrid retrieve())
+    query = rt_build_query(c)
+    severity_count = 0
+    retrieval_sources = {"semantic": 0, "lexical": 0, "hybrid": 0}
+    try:
+        hits = await rt_run_sync(rt_retrieve, case_id, query, 200)
+        for h in hits:
+            s = h.get("source")
+            if s in retrieval_sources:
+                retrieval_sources[s] += 1
+            if s in ("lexical", "hybrid"):
+                severity_count += 1
+    except Exception:
+        pass
+
+    # Orchestrator outcome (if it ran)
+    orch = (c.get("ai_results") or {}).get("orchestrator") or {}
+    report = orch.get("report") or {}
+    confidence = report.get("confidence_overall")  # 'low' / 'medium' / 'high' / None
+    conf_score = {"low": 0.33, "medium": 0.66, "high": 1.0}.get((confidence or "").lower(), 0.0)
+
+    # Composite quality 0..1 (weighted)
+    quality = round(
+        0.35 * coverage
+        + 0.30 * min(1.0, severity_count / 10.0)
+        + 0.35 * conf_score,
+        3,
+    )
+    if quality >= 0.75:
+        grade = "high"
+    elif quality >= 0.45:
+        grade = "medium"
+    else:
+        grade = "low"
+
+    return {
+        "case_id": case_id,
+        "quality_score": quality,
+        "grade": grade,
+        "coverage": round(coverage, 3),
+        "indexed_files": indexed_files,
+        "total_files": len(files),
+        "indexed_chunks_total": indexed_chunks_total,
+        "severity_chunks_retrieved": severity_count,
+        "retrieval_sources": retrieval_sources,
+        "retrieval_mode": "hybrid (lexical + semantic, RRF)",
+        "confidence_overall": confidence,
+        "orchestrator_status": orch.get("status"),
+        "caps": {
+            "max_chunks_per_file": idx_cfg.max_chunks,
+            "chunk_size_chars": idx_cfg.chunk_chars,
+            "max_index_bytes_per_file": max_index_bytes,
+        },
+        # Static reference numbers from the benchmark (so the UI can show "needle@rank")
+        "benchmark_reference": {
+            "semantic_only_1mb_needle_rank": "not_in_top_200",
+            "hybrid_1mb_needle_rank": 1,
+            "hybrid_1mb_needle_score": 0.80,
+            "noise_floor_score": 0.63,
+        },
+    }
+
+
+# ---- Upload pre-flight ----
+class PreflightRequest(BaseModel):
+    files: List[Dict[str, Any]]  # [{name, size}]
+
+
+@api.post("/upload/preflight")
+async def upload_preflight(req: PreflightRequest):
+    """Client sends [{name, size}] before uploading. We return per-file estimates
+    of how much will actually be indexed under current Settings so the UI can warn.
+    No file content moves — purely advisory.
+    """
+    settings = await get_settings_doc()
+    idx_cfg, max_index_bytes, read_mode = _index_config_from_settings(settings)
+    chunk_chars = idx_cfg.chunk_chars
+    max_chunks = idx_cfg.max_chunks
+    max_upload_mb = int(settings.get("max_upload_mb", 512))
+    binary_exts = {".evtx", ".dmp", ".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif"}
+
+    out = []
+    for f in req.files:
+        name = f.get("name") or "upload"
+        size = int(f.get("size") or 0)
+        ext = Path(name).suffix.lower()
+        warnings: List[str] = []
+        is_binary = ext in binary_exts
+
+        if size > max_upload_mb * 1024 * 1024:
+            warnings.append(f"exceeds max upload of {max_upload_mb} MB — will be rejected")
+
+        if is_binary:
+            est_chunks = None  # binary handlers produce condensed text; chunks not predictable from size
+            est_indexed_bytes = size
+            coverage = 1.0
+        else:
+            # bytes that will reach the chunker
+            bytes_for_chunking = min(size, max_index_bytes)
+            est_chunks_uncapped = max(1, bytes_for_chunking // max(1, chunk_chars - int(settings.get("chunk_overlap_chars", 100))))
+            est_chunks = min(est_chunks_uncapped, max_chunks)
+            est_indexed_bytes = est_chunks * chunk_chars
+            coverage = min(1.0, est_indexed_bytes / size) if size > 0 else 1.0
+            if size > max_index_bytes:
+                warnings.append(
+                    f"file is {size/1024/1024:.1f} MB but index cap is {max_index_bytes/1024/1024:.1f} MB "
+                    f"— tail-biased window will sample only {coverage*100:.0f}% of bytes "
+                    f"(mode={read_mode})"
+                )
+            if est_chunks_uncapped > max_chunks:
+                warnings.append(
+                    f"would produce ~{est_chunks_uncapped:,} chunks but cap is {max_chunks:,} "
+                    f"— raise max_chunks_per_file in Settings or split the file"
+                )
+
+        out.append({
+            "name": name,
+            "size": size,
+            "ext": ext,
+            "is_binary_handler": is_binary,
+            "estimated_chunks": est_chunks,
+            "estimated_indexed_bytes": est_indexed_bytes,
+            "estimated_coverage": round(coverage, 3),
+            "warnings": warnings,
+        })
+
+    return {
+        "settings": {
+            "max_upload_mb": max_upload_mb,
+            "max_index_bytes_per_file": max_index_bytes,
+            "max_chunks_per_file": max_chunks,
+            "chunk_size_chars": chunk_chars,
+            "index_read_mode": read_mode,
+        },
+        "files": out,
+    }
+
+
 @api.post("/cases/{case_id}/files/{file_id}/reindex")
 async def reindex_file(case_id: str, file_id: str, background: BackgroundTasks):
     c = await db.cases.find_one({"id": case_id}, {"_id": 0})
@@ -472,12 +664,13 @@ async def reindex_file(case_id: str, file_id: str, background: BackgroundTasks):
     if not target:
         raise HTTPException(404, "File not found")
     settings = await get_settings_doc()
-    idx_cfg, max_index_bytes = _index_config_from_settings(settings)
+    idx_cfg, max_index_bytes, read_mode = _index_config_from_settings(settings)
     background.add_task(_index_file_bg, FileIndexJob(
         case_id=case_id, file_id=file_id, name=target["name"],
         layer=target.get("layer", "unknown"),
         stored_path=target["stored_path"],
         cfg=idx_cfg, max_bytes=max_index_bytes,
+        read_mode=read_mode,
     ))
     return {"status": "indexing", "file_id": file_id}
 
@@ -499,7 +692,7 @@ async def _run_analysis_job(case_id: str, use_a: bool, use_b: bool):
         return
     settings = await get_settings_doc()
     top_k = int(settings.get("retrieval_top_k", 40))
-    idx_cfg, _ = _index_config_from_settings(settings)
+    idx_cfg, _, _ = _index_config_from_settings(settings)
 
     # Semantic retrieval
     query = rt_build_query(c)

@@ -41,7 +41,7 @@ class IndexConfig:
     """Tuning parameters for indexing a single file into the vector store."""
     chunk_chars: int = 800
     overlap_chars: int = 100
-    max_chunks: int = 4000
+    max_chunks: int = 10000
 
 
 # Severity tokens used by the lexical branch of hybrid retrieval.
@@ -154,18 +154,23 @@ def index_file(case_id: str, file_id: str, file_name: str, layer: str, text: str
         {"case_id": case_id, "file_id": file_id, "file_name": file_name, "layer": layer or "unknown", "chunk_index": i}
         for i in range(len(chunks))
     ]
-    embeddings = embed(chunks)
     col = _collection_get()
-    # add in batches to avoid huge payloads
+    # Embed + upsert in batches: previously we embedded the whole file at once which spiked
+    # memory (large logs → 100+ MB of float vectors held simultaneously) and made the chroma
+    # thread look hung. Batching keeps RSS bounded and lets the indexed_chunks counter
+    # grow during the run so the UI / benchmark sees progress.
     B = 256
-    for s in range(0, len(chunks), B):
+    total_chunks = len(chunks)
+    for s in range(0, total_chunks, B):
+        batch_chunks = chunks[s:s + B]
+        batch_embs = embed(batch_chunks)
         col.upsert(
             ids=ids[s:s + B],
-            documents=chunks[s:s + B],
-            embeddings=embeddings[s:s + B],
+            documents=batch_chunks,
+            embeddings=batch_embs,
             metadatas=metadatas[s:s + B],
         )
-    return len(chunks)
+    return total_chunks
 
 
 def retrieve(case_id: str, query: str, top_k: int = 40) -> List[dict]:

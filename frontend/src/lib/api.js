@@ -39,6 +39,10 @@ export const apiClient = {
   orchestrate: (caseId) => api.post(`/cases/${caseId}/orchestrate`, {}, { timeout: 30000 }).then(r => r.data),
   orchestrateStatus: (caseId) => api.get(`/cases/${caseId}/orchestrate/status`).then(r => r.data),
   listCasePatterns: (categoryId) => api.get(`/case-patterns`, { params: categoryId ? { category_id: categoryId } : {} }).then(r => r.data),
+  // diagnostic quality (per-case composite score for the UI badge)
+  diagnosticQuality: (caseId) => api.get(`/cases/${caseId}/diagnostic_quality`).then(r => r.data),
+  // upload pre-flight (estimate chunks/coverage before sending bytes)
+  uploadPreflight: (files) => api.post(`/upload/preflight`, { files }).then(r => r.data),
   // settings
   getSettings: () => api.get("/settings").then(r => r.data),
   saveSettings: (payload) => api.put("/settings", payload).then(r => r.data),
