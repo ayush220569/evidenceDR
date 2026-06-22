@@ -22,6 +22,21 @@ function ChunkCard({ ch, layers, index }) {
         <span className="font-mono text-[#00E5FF]">{ch.file_name}</span>
         <span className="font-mono text-[#A1A1AA]">ch{ch.chunk_index}</span>
         <span className={`tag ${scoreClass(ch.score || 0)}`}>{(ch.score || 0).toFixed(3)}</span>
+        {ch.source && (
+          <span
+            className="tag"
+            style={
+              ch.source === "lexical"
+                ? { color: "#F59E0B", borderColor: "#F59E0B55" }
+                : ch.source === "hybrid"
+                ? { color: "#10B981", borderColor: "#10B98155" }
+                : { color: "#71717A", borderColor: "#71717A55" }
+            }
+            data-testid={`retrieved-chunk-source-${index}`}
+          >
+            {ch.source}
+          </span>
+        )}
         {ch.layer && layerStyle && (
           <span className="tag" style={layerStyle}>{layers[ch.layer].name || ch.layer}</span>
         )}

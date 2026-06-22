@@ -44,21 +44,36 @@ Build a production-oriented full-stack web app for ArcGIS / Enterprise / Pro sup
 - Frontend: new **Retrieved Evidence (RAG)** panel in Case Workspace → AI Comparison tab; Settings page exposes top-K / chunk size / overlap / max index bytes
 - Tested: 40/42 backend tests + 100% frontend (testing_agent_v3 iter 2). Semantic scoring verified — relevant SAML chunks scored 0.738 vs irrelevant noise 0.526.
 
-## Upgraded in v1.2 (2026-02-11) — Deep Investigation size benchmark
-- Made background indexing fully non-blocking: `extract_text` now goes through `asyncio.to_thread` before the chromadb single-thread worker, so concurrent API calls stay responsive even while embedding multi-MB files.
-- Indexed-chunk count is now persisted back to the case file metadata once indexing completes (`files.indexed=true`, `files.indexed_chunks=N`).
-- Ran `/app/scripts/size_quality_test.py` benchmark over 1 / 5 / 12 MB synthetic SAML-incident logs to characterise the quality cliffs of the orchestrator pipeline. Full write-up: `/app/scripts/SIZE_QUALITY_REPORT.md`. Headline:
-  - ≤ 3 MB → high quality: needle found, root cause + layer correct (B_1MB: 1,581 chunks, 164 s, conf=low, layer=portal)
-  - 3 – 10 MB → degrades: needle still retrieved but synthesis dilutes (D_5MB: 4,000 capped chunks, found=YES but rc_hit=NO, layer=unknown)
-  - > 10 MB → hard byte cap (`max_index_bytes_per_file`) cuts content past 10 MB out entirely
-  - Knobs: lift `IndexConfig.max_chunks` from 4000 → 8000+ in `backend/retrieval.py` and raise `chunk_size_chars` to 1200 in Settings for big-log fidelity.
+## Upgraded in v1.3 (2026-02-11) — Hybrid retrieval (lexical + semantic, RRF-fused)
+Identified during the size-vs-quality benchmark: pure semantic retrieval (`bge-small`) cannot surface ERROR/WARN needles in noisy INFO-dominated logs. Verified by directly querying a 1 MB case for verbatim needle terms — top-3 results were all housekeeping INFO (scores 0.63), needle absent from top-200.
+
+Implemented hybrid retrieval in `backend/retrieval.py`:
+- New `SEVERITY_TERMS` constant: `ERROR`, `FATAL`, `CRITICAL`, `WARN`, `WARNING`, `Exception`, `Traceback`, `ACCESS_DENIED`, `Forbidden`, `FAILED`, `timeout`, `denied`, etc.
+- `retrieve()` now runs two parallel chromadb queries: (1) pure semantic top-K, (2) semantic top-K *restricted* to chunks containing severity tokens via `where_document.$or.$contains`.
+- Both result lists are merged via **Reciprocal Rank Fusion** (RRF, k=60) — gold-standard fusion that needs no calibration.
+- Each result is tagged with `source ∈ {semantic, lexical, hybrid}` so the UI can show why a chunk surfaced (orange = lexical, green = hybrid).
+- Graceful fallback: if chromadb's `$or` on `where_document` isn't supported on the deployed version, falls back to pure semantic without error.
+- Clean logs (no severity tokens) → 100 % semantic results, no regression on happy-path corpora.
+
+End-to-end validation on the 1 MB SAML-blank-page case (same case that returned `rc_hit=NO, layer=unknown` before):
+
+| Metric | Semantic-only (before) | Hybrid (after) |
+|---|---|---|
+| Needle rank in top-200 | not present | rank 1 (lexical) |
+| Best needle score | – | 0.80 (vs 0.63 noise floor) |
+| Orchestrator `root_cause.primary_hypothesis` | "Root cause not confirmed from supplied evidence" | "The SAML assertion did not include the required NAME_ID claim, so Portal could not create a session…" (cites verbatim ERROR/WARN lines) |
+| `likely_layer` | unknown | portal ✅ |
+
+Regression test added at `backend/tests/test_hybrid_retrieval.py`.
 
 ## Backlog / future
 - P1: PDF export (currently Markdown / HTML / JSON only)
 - P1: Auth (AD / SSO / IIS auth front)
-- P1: Scheduled retention purge job
 - P1: Expose `max_chunks` as a Settings field (currently a code constant)
+- P1: Pre-flight upload warning when file size would exceed `max_chunks` / `max_index_bytes` caps
+- P2: Tail-first or sliding-window indexing for >10 MB logs (errors often live at the tail)
+- P2: Upgrade to `bge-base-en-v1.5` for ~2× recall on technical text
 - P2: Richer EVTX & dump parsing
 - P2: Case sharing / templates / multi-tenant
 - P2: Charts on dashboard (Recharts)
-- P2: Pre-filter large logs by time window before indexing
+- P2: Scheduled retention purge job

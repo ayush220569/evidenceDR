@@ -12,7 +12,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -42,6 +42,22 @@ class IndexConfig:
     chunk_chars: int = 800
     overlap_chars: int = 100
     max_chunks: int = 4000
+
+
+# Severity tokens used by the lexical branch of hybrid retrieval.
+# chromadb's where_document $contains is case-sensitive substring, so we include the
+# common casings actually seen in ArcGIS / IIS / Portal / Pro / Java logs. Keep this
+# tight — over-broad terms ("error", "warn") would match item names, paths, etc.
+SEVERITY_TERMS: List[str] = [
+    "ERROR", "FATAL", "CRITICAL",
+    "WARN ", "WARNING",
+    "Exception", "EXCEPTION",
+    "Traceback", "stack trace",
+    "ACCESS_DENIED", "AccessDenied", "Forbidden",
+    "FAILED", " FAIL ",
+    "timeout", "Timeout", "TIMEOUT",
+    "denied",
+]
 
 
 class _Singletons:
@@ -153,7 +169,17 @@ def index_file(case_id: str, file_id: str, file_name: str, layer: str, text: str
 
 
 def retrieve(case_id: str, query: str, top_k: int = 40) -> List[dict]:
-    """Return top-K chunks for a case, ranked by cosine similarity."""
+    """Hybrid retrieval: semantic top-K fused with a severity-filtered ('lexical') top-K.
+
+    Why hybrid: in homogeneous noisy logs (housekeeping/INFO dominated), a tiny number of
+    ERROR/WARN/FATAL chunks are structurally similar to the noise around them, so a pure
+    semantic search ranks them near the noise floor. We separately query chromadb for chunks
+    that *contain* severity keywords and merge the two ranked lists via Reciprocal Rank Fusion
+    (RRF), which gives a high-recall result without needing a re-rank model.
+
+    The fused result is the same shape the caller already expects; an extra `source` field
+    ('semantic' | 'lexical' | 'hybrid') is set so the UI can show why a chunk surfaced.
+    """
     if not query or not query.strip():
         return []
     col = _collection_get()
@@ -165,27 +191,100 @@ def retrieve(case_id: str, query: str, top_k: int = 40) -> List[dict]:
         n = 0
     if n == 0:
         return []
-    k = min(top_k, n)
+    k_sem = min(top_k, n)
     q_emb = embed([query])
-    res = col.query(
+
+    # ---- Semantic branch ----
+    res_sem = col.query(
         query_embeddings=q_emb,
-        n_results=k,
+        n_results=k_sem,
         where={"case_id": case_id},
         include=["documents", "metadatas", "distances"],
     )
+    sem_ids = (res_sem.get("ids") or [[]])[0]
+    sem_docs = (res_sem.get("documents") or [[]])[0]
+    sem_metas = (res_sem.get("metadatas") or [[]])[0]
+    sem_dists = (res_sem.get("distances") or [[]])[0]
+
+    # ---- Lexical branch (severity-filtered) ----
+    # Use chromadb's where_document $contains with an $or across severity tokens.
+    # If the case has zero severity-bearing chunks this returns an empty result set.
+    sev_filter = {"$or": [{"$contains": term} for term in SEVERITY_TERMS]}
+    lex_ids: List[str] = []
+    lex_docs: List[str] = []
+    lex_metas: List[dict] = []
+    lex_dists: List[float] = []
+    try:
+        # Probe how many severity-bearing chunks exist before asking for k of them
+        lex_existing = col.get(
+            where={"case_id": case_id},
+            where_document=sev_filter,
+            include=[],
+        )
+        n_lex = len(lex_existing.get("ids", []))
+        if n_lex > 0:
+            k_lex = min(top_k, n_lex)
+            res_lex = col.query(
+                query_embeddings=q_emb,
+                n_results=k_lex,
+                where={"case_id": case_id},
+                where_document=sev_filter,
+                include=["documents", "metadatas", "distances"],
+            )
+            lex_ids = (res_lex.get("ids") or [[]])[0]
+            lex_docs = (res_lex.get("documents") or [[]])[0]
+            lex_metas = (res_lex.get("metadatas") or [[]])[0]
+            lex_dists = (res_lex.get("distances") or [[]])[0]
+    except Exception:
+        # chromadb $or on where_document may not be supported on older versions;
+        # silently fall back to pure semantic in that case.
+        pass
+
+    # ---- Reciprocal Rank Fusion (k=60 is the canonical constant from the RRF paper) ----
+    RRF_K = 60
+    fused: Dict[str, dict] = {}
+
+    def _add(ids: list, docs: list, metas: list, dists: list, source: str):
+        for rank, _id in enumerate(ids):
+            if rank >= len(docs):
+                break
+            slot = fused.get(_id)
+            score_contrib = 1.0 / (RRF_K + rank + 1)
+            if slot is None:
+                slot = {
+                    "_id": _id, "rrf": 0.0, "sources": set(),
+                    "doc": docs[rank], "meta": metas[rank] if rank < len(metas) else {},
+                    "dist": dists[rank] if rank < len(dists) else None,
+                }
+                fused[_id] = slot
+            slot["rrf"] += score_contrib
+            slot["sources"].add(source)
+            # prefer the smallest cosine distance seen for this id (used for display score)
+            if dists and rank < len(dists):
+                cur = slot.get("dist")
+                if cur is None or dists[rank] < cur:
+                    slot["dist"] = dists[rank]
+
+    _add(sem_ids, sem_docs, sem_metas, sem_dists, "semantic")
+    _add(lex_ids, lex_docs, lex_metas, lex_dists, "lexical")
+
+    # Sort by fused RRF score, take top_k
+    ranked = sorted(fused.values(), key=lambda s: s["rrf"], reverse=True)[:top_k]
+
     out: List[dict] = []
-    docs = (res.get("documents") or [[]])[0]
-    metas = (res.get("metadatas") or [[]])[0]
-    dists = (res.get("distances") or [[]])[0]
-    for doc, meta, dist in zip(docs, metas, dists):
+    for s in ranked:
+        meta = s["meta"] or {}
+        sources = sorted(s["sources"])
         out.append({
-            "text": doc,
+            "text": s["doc"],
             "file_name": meta.get("file_name"),
             "file_id": meta.get("file_id"),
             "layer": meta.get("layer"),
             "chunk_index": meta.get("chunk_index"),
-            "distance": float(dist),
-            "score": round(max(0.0, 1.0 - float(dist)), 4),  # cosine → similarity 0..1
+            "distance": float(s["dist"]) if s.get("dist") is not None else None,
+            "score": round(max(0.0, 1.0 - float(s["dist"])), 4) if s.get("dist") is not None else None,
+            "rrf_score": round(s["rrf"], 5),
+            "source": "hybrid" if len(sources) > 1 else sources[0],
         })
     return out
 
